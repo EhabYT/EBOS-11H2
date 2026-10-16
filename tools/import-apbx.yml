@@ -1,10 +1,26 @@
-name: Import APBX
+# APBX import workflow
+#
+# PARKED IN tools/ ON PURPOSE: the GitHub App connection used to edit this repo
+# has no `workflows` permission, so it cannot create files under
+# .github/workflows/. Move it into place from a machine with push access:
+#
+#   mkdir -p .github/workflows
+#   git mv tools/import-apbx.yml .github/workflows/import-apbx.yml
+#   git commit -m "Enable APBX import workflow" && git push
+#
+# Then: Actions tab -> "Import APBX" -> Run workflow.
+#
+# WHY THIS EXISTS: the sandbox this repo is edited from can only reach
+# github.com / api.github.com / codeload.github.com. Release assets are served
+# from release-assets.githubusercontent.com, which is blocked there, so the
+# bytes have to be unpacked by a runner and committed back.
+#
+# The password can come from a repository secret APBX_PASS (preferred) or from
+# the `password` dispatch input. Inputs are visible in the run UI on public
+# repos, so add the secret in Settings -> Secrets and variables -> Actions if
+# you don't want the password shown there.
 
-# Pulls a playbook .apbx from this repo's release assets, unpacks it with the
-# APBX_PASS secret, and commits the tree back to the branch it runs on.
-# Needed because the sandbox this repo is edited from can only reach
-# github.com / api.github.com / codeload.github.com -- release asset bytes are
-# served from release-assets.githubusercontent.com, which is blocked there.
+name: Import APBX
 
 on:
   workflow_dispatch:
@@ -13,8 +29,12 @@ on:
         description: 'Release asset id to import'
         required: false
         default: '647664817'
+      password:
+        description: 'Archive password (leave blank to use the APBX_PASS secret)'
+        required: false
+        default: ''
       dest:
-        description: 'Destination folder inside the repo (empty = repo root)'
+        description: 'Destination folder inside the repo (blank = repo root)'
         required: false
         default: ''
 
@@ -42,31 +62,37 @@ jobs:
 
       - name: Extract
         env:
-          APBX_PASS: ${{ secrets.APBX_PASS }}
+          APBX_PASS: ${{ inputs.password != '' && inputs.password || secrets.APBX_PASS }}
         run: |
           set -euo pipefail
+          if [ -z "${APBX_PASS:-}" ]; then
+            echo "No password supplied (neither input nor APBX_PASS secret)." >&2
+            exit 1
+          fi
           sudo apt-get update -qq
           sudo apt-get install -y -qq p7zip-full unzip
           mkdir -p /tmp/apbx/out
           cd /tmp/apbx
           if 7z x -y -p"$APBX_PASS" -o/tmp/apbx/out playbook.apbx >/tmp/apbx/7z.log 2>&1; then
-            echo "method=7z" >> "$GITHUB_STEP_SUMMARY"
+            echo "method=7z"   >> "$GITHUB_STEP_SUMMARY"
             echo "extracted with 7z"
           elif unzip -o -P "$APBX_PASS" playbook.apbx -d /tmp/apbx/out >/tmp/apbx/unzip.log 2>&1; then
             echo "method=unzip" >> "$GITHUB_STEP_SUMMARY"
             echo "extracted with unzip"
           else
-            echo "extraction failed with both 7z and unzip"
-            tail -20 /tmp/apbx/7z.log || true
+            echo "extraction failed with both 7z and unzip" >&2
+            tail -20 /tmp/apbx/7z.log    || true
             tail -20 /tmp/apbx/unzip.log || true
             exit 1
           fi
           echo "files extracted: $(find /tmp/apbx/out -type f | wc -l)"
           echo "total bytes:     $(du -sb /tmp/apbx/out | cut -f1)"
+          find /tmp/apbx/out -maxdepth 2 | head -60
 
       - name: Stage into repo
         run: |
           set -euo pipefail
+          chmod +x .github/scripts/stage_apbx.py
           python3 .github/scripts/stage_apbx.py \
             --src /tmp/apbx/out \
             --repo "$GITHUB_WORKSPACE" \
