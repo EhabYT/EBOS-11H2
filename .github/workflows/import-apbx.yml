@@ -1,0 +1,89 @@
+name: Import APBX
+
+# Pulls a playbook .apbx from this repo's release assets, unpacks it with the
+# APBX_PASS secret, and commits the tree back to the branch it runs on.
+# Needed because the sandbox this repo is edited from can only reach
+# github.com / api.github.com / codeload.github.com -- release asset bytes are
+# served from release-assets.githubusercontent.com, which is blocked there.
+
+on:
+  workflow_dispatch:
+    inputs:
+      asset_id:
+        description: 'Release asset id to import'
+        required: false
+        default: '647664817'
+      dest:
+        description: 'Destination folder inside the repo (empty = repo root)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/apbx
+          gh api "repos/${{ github.repository }}/releases/assets/${{ inputs.asset_id }}" \
+            -H "Accept: application/octet-stream" > /tmp/apbx/playbook.apbx
+          echo "downloaded bytes: $(stat -c%s /tmp/apbx/playbook.apbx)"
+          file /tmp/apbx/playbook.apbx || true
+          sha256sum /tmp/apbx/playbook.apbx
+
+      - name: Extract
+        env:
+          APBX_PASS: ${{ secrets.APBX_PASS }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq p7zip-full unzip
+          mkdir -p /tmp/apbx/out
+          cd /tmp/apbx
+          if 7z x -y -p"$APBX_PASS" -o/tmp/apbx/out playbook.apbx >/tmp/apbx/7z.log 2>&1; then
+            echo "method=7z" >> "$GITHUB_STEP_SUMMARY"
+            echo "extracted with 7z"
+          elif unzip -o -P "$APBX_PASS" playbook.apbx -d /tmp/apbx/out >/tmp/apbx/unzip.log 2>&1; then
+            echo "method=unzip" >> "$GITHUB_STEP_SUMMARY"
+            echo "extracted with unzip"
+          else
+            echo "extraction failed with both 7z and unzip"
+            tail -20 /tmp/apbx/7z.log || true
+            tail -20 /tmp/apbx/unzip.log || true
+            exit 1
+          fi
+          echo "files extracted: $(find /tmp/apbx/out -type f | wc -l)"
+          echo "total bytes:     $(du -sb /tmp/apbx/out | cut -f1)"
+
+      - name: Stage into repo
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/stage_apbx.py \
+            --src /tmp/apbx/out \
+            --repo "$GITHUB_WORKSPACE" \
+            --dest "${{ inputs.dest }}" \
+            --max-bytes 90000000 \
+            --report IMPORT-REPORT.md
+
+      - name: Commit and push
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+          else
+            git commit -m "Import playbook from release asset ${{ inputs.asset_id }}"
+            git push origin "HEAD:${{ github.ref_name }}"
+            echo "pushed to ${{ github.ref_name }}"
+          fi

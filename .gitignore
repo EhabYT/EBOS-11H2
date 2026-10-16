@@ -1,0 +1,4 @@
+# Playbook build output / downloaded packages
+*.apbx
+/download/
+/tmp/
