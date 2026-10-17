@@ -1,0 +1,112 @@
+name: release
+
+# Builds the .apbx and attaches it to the GitHub release for the pushed tag.
+#
+# The tag must equal <Version> in playbook.conf (here: 11.2) - AME Wizard compares
+# the two to decide whether an update is available, so a tag like "v11.2" silently
+# breaks the update check.
+#
+# Why this exists: release assets can only be uploaded to uploads.github.com, which
+# is not reachable from every build environment. Running the build here means the
+# asset is produced and attached by GitHub itself.
+
+on:
+  push:
+    tags: ["*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and attach (must equal playbook.conf Version)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: pip install --quiet pyyaml py7zr
+
+      - name: Check that the tag matches the playbook version
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          version=$(python3 - <<'EOF'
+          import xml.etree.ElementTree as ET
+          print(ET.parse("playbook.conf").getroot().findtext("Version").strip())
+          EOF
+          )
+          echo "tag=$tag version=$version"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::Tag '$tag' does not match <Version> '$version'. AME Wizard checks updates against the tag name."
+            exit 1
+          fi
+
+      - name: Static checks
+        run: python3 tools/check-ps-syntax.py
+
+      - name: Build
+        run: python3 tools/build-playbook.py
+
+      - name: Verify the archive opens with 7-Zip
+        # py7zr wrote it, but AME Wizard reads it with 7-Zip. Prove the reference
+        # implementation accepts the archive, its encryption and its entry names.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq p7zip-full
+          archive=$(ls release/*.apbx)
+          echo "archive: $archive"
+          7z l -p"malte" "$archive" | tail -5
+          7z t -p"malte" "$archive" | tail -3
+          if 7z l "$archive" >/dev/null 2>&1; then
+            echo "::error::Archive listed without a password - header encryption is not on."
+            exit 1
+          fi
+          echo "header encryption: confirmed"
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd release
+          sha256sum *.apbx | tee SHA256SUMS.txt
+          ls -l
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          files=$(ls release/*.apbx) release/SHA256SUMS.txt
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" $files --clobber
+          else
+            gh release create "$tag" $files \
+              --title "EBOS $tag" \
+              --generate-notes \
+              --verify-tag
+          fi
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "### EBOS build"
+            echo
+            cat release/SHA256SUMS.txt 2>/dev/null || echo "no archive produced"
+            echo
+            ls -lh release/*.apbx 2>/dev/null || true
+          } >> "$GITHUB_STEP_SUMMARY"

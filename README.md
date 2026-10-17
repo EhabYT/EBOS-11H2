@@ -329,6 +329,31 @@ you want before publishing an offline release. See `Executables/BUNDLES.md`.
 
 `release/` and `*.apbx` are gitignored; rebuild in about 30 seconds.
 
+The archive is written by `py7zr` but read by AME Wizard's own 7-Zip, so the two have to
+agree. Verified with p7zip 16.02: `7z t` reports *Everything is Ok* on all 228 entries,
+`7z l` lists names only with the password, and extraction returns byte-identical files.
+
+### Releasing
+
+A release asset can only be uploaded to `uploads.github.com`, which is not reachable from
+every build machine. `.github/workflows/` is outside what this repository's automation
+token may write, so `tools/ci/release.yml` is parked there ready to copy:
+
+```bash
+mkdir -p .github/workflows && cp tools/ci/release.yml .github/workflows/release.yml
+```
+
+Once committed, every tag push builds the archive on a runner, checks it with real 7-Zip
+and attaches it to the release - no local upload needed. The workflow refuses a tag that
+does not equal `<Version>` in `playbook.conf`, because AME Wizard compares the two when
+deciding whether an update is available.
+
+Until then, after building locally:
+
+```bash
+gh release upload 11.2 release/EBOS-v11.2.apbx
+```
+
 ## Verification
 
 After apply, `ebos-verify.ps1` re-reads every declared registry value, key, service, task, AppX entry and file (theme content, 17 cursors, ICO headers). Anything that did not take is logged to `%WINDIR%\EBOS\ebos-skipped.txt`. Gated options that were unticked count as not-applicable, not failures.
