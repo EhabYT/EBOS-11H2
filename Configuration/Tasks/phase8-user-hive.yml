@@ -1,0 +1,33 @@
+---
+# User-hive repair pass.
+#
+# Every HKCU registryValue in phases 1-7 is written while running as TrustedInstaller, where
+# HKCU resolves to SYSTEM's hive. Those settings do not reach the user who logs in afterwards,
+# which is what ebos-verify.ps1 reports and why two blocks in phase2/phase6 were hand-patched.
+#
+# This phase replays the same data against the hives that matter: every loaded S-1-5-21-*
+# profile, the AME default hive, HKU\.DEFAULT, and the offline-mounted Default profile that new
+# accounts are cloned from.
+#
+# Runs last, after every phase that could have written a per-user value.
+# Generated data: Executables/apply-hkcu-fanout.ps1 (regenerate with tools/build-hkcu-fanout.py).
+privilege: TrustedInstaller
+actions:
+  - !writeStatus: {status: "Applying per-user settings"}
+  - !powerShell:
+    exeDir: true
+    wait: true
+    errorAction: Ignore
+    command: >-
+      .\apply-hkcu-fanout.ps1
+
+  # Verification moved here from phase7: it has to see the user-hive repair above, and
+  # phase7b's Windhawk step, otherwise it reports values that phases running later fix.
+  - !writeStatus: {status: "Verifying"}
+  - !powerShell:
+    wait: true
+    exeDir: true
+    errorAction: Ignore
+    command: >-
+      .\ebos-verify.ps1
+  - !writeStatus: {status: "EBOS complete."}

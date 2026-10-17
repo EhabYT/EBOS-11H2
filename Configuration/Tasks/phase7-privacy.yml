@@ -139,7 +139,7 @@ actions:
       }
       $winreAgent = Join-Path $env:SystemDrive '$WinREAgent'
       if (Test-Path $winreAgent) {
-        & cmd.exe /c rd /s /q """$winreAgent""" 2>$null | Out-Null
+        & cmd.exe /c rd /s /q "$winreAgent" 2>$null | Out-Null
       }
       $global:LASTEXITCODE = 0
 
@@ -250,11 +250,3 @@ actions:
       errorAction: Ignore
       command: >-
         .\install-windhawk.ps1
-  - !writeStatus: {status: "Verifying"}
-  - !powerShell:
-      wait: true
-      exeDir: true
-      errorAction: Ignore
-      command: >-
-        .\ebos-verify.ps1
-  - !writeStatus: {status: "EBOS complete."}

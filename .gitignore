@@ -1,0 +1,14 @@
+# Bundled third-party binaries - see Executables/BUNDLES.md
+Executables/windhawk-cache/
+Executables/windhawk-cli*-installer.exe
+Executables/vc_redist.x64.exe
+Executables/BraveSetup.exe
+Executables/brave-setup.exe
+
+# Build output
+offline-bundle/
+*.apbx
+
+# Python bytecode (tools/)
+__pycache__/
+*.pyc

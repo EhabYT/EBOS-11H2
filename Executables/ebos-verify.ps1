@@ -15,6 +15,10 @@ if (Test-Path $optFile) { foreach ($l in (Get-Content $optFile)) { $t=$l.Trim();
 function Test-Gate { param([string]$g)
   if (-not $g) { return $true }
   if ($g.StartsWith('!')) { return -not ($opts -contains $g.Substring(1)) }
+  # 'a+b' = both options. Needed because some values are only written when two ticks
+  # line up (the theme is only registered when dark mode AND wallpaper are on: the
+  # theme file points at the wallpaper image, and that image is not copied otherwise).
+  if ($g.Contains('+')) { foreach ($p in $g.Split('+')) { if (-not (Test-Gate $p)) { return $false } }; return $true }
   return ($opts -contains $g) }
 $userHives = @()
 foreach ($s in (Get-ChildItem 'Registry::HKEY_USERS')) {
@@ -64,6 +68,38 @@ function Format-RegValue { param($v)
   return [string]$v }
 
 $regs = @(
+  # EBOS Dark accent, written by apply-ebos-theme.ps1. Two byte orders on purpose:
+  # ColorizationColor is ARGB, AccentColorMenu is ABGR. Values are decimal because the
+  # registry returns these DWORDs as signed ints and Test-SameValue masks with 0xFFFFFFFF.
+  @{p='HKCU\Software\Microsoft\Windows\DWM';v='ColorizationColor';d='4281825461';op='add';g='fs-darkmode'},
+  @{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Accent';v='AccentColorMenu';d='4290082871';op='add';g='fs-darkmode'},
+  @{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Accent';v='StartColorMenu';d='4290082871';op='add';g='fs-darkmode'},
+  # fs-darkmode had no verification at all before these: the option was written by two
+  # different blocks and nothing ever read the result back.
+  @{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize';v='AppsUseLightTheme';d='0';op='add';g='fs-darkmode'},
+  @{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize';v='SystemUsesLightTheme';d='0';op='add';g='fs-darkmode'},
+  @{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize';v='ColorPrevalence';d='0';op='add';g='fs-darkmode'},
+  # fs-notransparency rewrites this to 0, so a single ungated row reported the correct 0 as
+  # a failure. Complementary gates: exactly one of the two is active on any given build.
+  @{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize';v='EnableTransparency';d='1';op='add';g='!fs-notransparency'},
+  @{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize';v='EnableTransparency';d='0';op='add';g='fs-notransparency'},
+  # One representative event proves the [Sounds] scheme landed; blanking every event is
+  # the mechanism, so a non-empty one here means the sweep never ran.
+  @{p='HKCU\AppEvents\Schemes\Apps\.Default\SystemAsterisk\.Current';v='';d='';op='add';g='fs-darkmode'},
+  # Applied state, not file text: without this the theme only sits in Resources\Themes.
+  @{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Themes';v='CurrentTheme';d=($env:windir + '\Resources\Themes\EBOS-dark.theme');op='add';g='fs-darkmode+fs-wallpaper'},
+  @{p='HKCU\Control Panel\Colors';v='Background';d='20 38 63';op='add';g='fs-darkmode'},
+  # Writes that existed in the playbook with no assertion behind them. Found by diffing
+  # every !registryValue against this table: 7 of 670 were missing.
+  @{p='HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer';v='HideSCAMeetNow';d='1';op='add';g=''},
+  @{p='HKU\.DEFAULT\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer';v='HideSCAMeetNow';d='1';op='add';g=''},
+  @{p='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer';v='HideSCAMeetNow';d='1';op='add';g=''},
+  # Ungated deletes of legacy MPO values. A delete that silently did nothing is invisible
+  # unless absence is asserted, which is exactly what these four rows do.
+  @{p='HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers';v='DisableOverlays';d='';op='delete';g=''},
+  @{p='HKLM\SOFTWARE\Microsoft\Windows\Dwm';v='EnableOverlay';d='';op='delete';g=''},
+  @{p='HKLM\SOFTWARE\Microsoft\Windows\Dwm';v='OverlayTestMode';d='';op='delete';g=''},
+  @{p='HKLM\SOFTWARE\Microsoft\Windows\Dwm';v='OverlayMinFPS';d='';op='delete';g=''},
   @{p='HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings';v='FlightSettingsMaxPauseDays';d='3650';op='add';g=''},
   @{p='HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings';v='PauseFeatureUpdatesStartTime';d='2025-01-01T00:00:00Z';op='add';g=''},
   @{p='HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings';v='PauseFeatureUpdatesEndTime';d='2033-01-01T00:00:00Z';op='add';g=''},
@@ -739,6 +775,9 @@ $regs = @(
 # wins only compared values against values, so the GameBar IFEO entries - written, then
 # their whole key removed - were reported missing on every single run.
 $keys = @(
+  # 2 of 76 !registryKey actions were unchecked; both are deprovision markers.
+  @{p='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Deprovisioned\Microsoft.MSPaint_8wekyb3d8bbwe';op='add';g='remove-bloat'},
+  @{p='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Deprovisioned\Microsoft.WidgetsPlatformRuntime_8wekyb3d8bbwe';op='add';g='remove-bloat'},
   @{p='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Deprovisioned\Microsoft.549981C3F5F10_8wekyb3d8bbwe';op='add';g='remove-bloat'},
   @{p='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Deprovisioned\Microsoft.BingNews_8wekyb3d8bbwe';op='add';g='remove-bloat'},
   @{p='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Deprovisioned\Microsoft.BingWeather_8wekyb3d8bbwe';op='add';g='remove-bloat'},
@@ -964,12 +1003,12 @@ $allTasks = @{}
 foreach ($t in (Get-ScheduledTask)) { $allTasks[($t.TaskPath + $t.TaskName)] = $t.State }
 $tasks = @(
   @{t='\Microsoft\Windows\UpdateOrchestrator\Driver Install';g='disable-auto-driver-updates'},
-  @{t='\Microsoft\Windows\Windows Defender\Windows Defender Cache Maintenance';g='disable-defender'},
-  @{t='\Microsoft\Windows\Windows Defender\Windows Defender Cleanup';g='disable-defender'},
-  @{t='\Microsoft\Windows\Windows Defender\Windows Defender Scheduled Scan';g='disable-defender'},
-  @{t='\Microsoft\Windows\Windows Defender\Windows Defender Verification';g='disable-defender'},
-  @{t='\Microsoft\Windows\CrossDevice\CleanupResumeTimelineData';g=''},
-  @{t='\Microsoft\Windows\SystemUptime\Resume on Boot';g=''},
+  @{t='\Microsoft\Windows\Windows Defender\Windows Defender Cache Maintenance';g='disable-defender';op='delete'},
+  @{t='\Microsoft\Windows\Windows Defender\Windows Defender Cleanup';g='disable-defender';op='delete'},
+  @{t='\Microsoft\Windows\Windows Defender\Windows Defender Scheduled Scan';g='disable-defender';op='delete'},
+  @{t='\Microsoft\Windows\Windows Defender\Windows Defender Verification';g='disable-defender';op='delete'},
+  @{t='\Microsoft\Windows\CrossDevice\CleanupResumeTimelineData';g='';op='delete'},
+  @{t='\Microsoft\Windows\SystemUptime\Resume on Boot';g='';op='delete'},
   @{t='\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser';g=''},
   @{t='\Microsoft\Windows\Application Experience\StartupAppTask';g=''},
   @{t='\Microsoft\Windows\Customer Experience Improvement Program\Consolidator';g=''},
@@ -1128,6 +1167,13 @@ $tasks = @(
 )
 foreach ($e in $tasks) {
   if (-not (Test-Gate $e.g)) { $na++; continue }
+  # A deleted task never reports 'Disabled' - it is simply absent, which the old code
+  # counted as not-applicable and therefore could never fail.
+  if ($e.op -eq 'delete') {
+    $checked++
+    if ($allTasks.ContainsKey($e.t)) { $bad++; $out += ('TASK STILL PRESENT     ' + $e.t + ' = ' + $allTasks[$e.t]) }
+    continue
+  }
   if (-not $allTasks.ContainsKey($e.t)) { $na++; continue }
   $checked++
   if ($allTasks[$e.t] -ne 'Disabled') { $bad++; $out += ('TASK NOT DISABLED      ' + $e.t + ' = ' + $allTasks[$e.t]) } }
@@ -1147,6 +1193,7 @@ $appx = @(
   @{n='Microsoft.MicrosoftOfficeHub*';g='remove-bloat'},
   @{n='Microsoft.MicrosoftSolitaireCollection*';g='remove-bloat'},
   @{n='Microsoft.MicrosoftStickyNotes*';g='remove-bloat'},
+  @{n='Microsoft.MSPaint*';g='remove-bloat'},
   @{n='Microsoft.Office.OneNote*';g='remove-bloat'},
   @{n='Microsoft.OutlookForWindows*';g='remove-bloat'},
   @{n='Microsoft.People*';g='remove-bloat'},
@@ -1289,6 +1336,9 @@ foreach ($e in $appx) {
   if ($hit) { $bad++; $out += ('APPX STILL INSTALLED   ' + $e.n + ' -> ' + $hit.Name) } }
 
 # --- file checks (theme / wallpaper / cursors / icons) - read-only ----
+# These prove the artefacts were laid down and are well formed. They do NOT prove the
+# theme is active - a file can sit in Resources\Themes forever and never be used. Active
+# state is the DWM\ColorizationColor and Themes\CurrentTheme checks in $regs above.
 $files = @(
   @{p='%SystemRoot%\Resources\Themes\EBOS-dark.theme';g='fs-darkmode';contains=@('ColorizationColor=0XFF3778B5','Background=20 38 63','wallpaper.png','ebos-arrow.ani')},
   @{p='%SystemRoot%\Web\Wallpaper\EBOS\wallpaper.png';g='fs-wallpaper';contains=@()},
@@ -1296,7 +1346,8 @@ $files = @(
   @{p='%SystemRoot%\Cursors\EBOS\ebos-arrow.ani';g='';contains=@()},
   @{p='%SystemRoot%\Cursors\EBOS\ebos-wait.ani';g='';contains=@()},
   @{p='%SystemRoot%\EBOS\ebos.ico';g='';contains=@()},
-  @{p='%SystemRoot%\EBOS\profile.png';g='fs-wallpaper';contains=@()}
+  @{p='%SystemRoot%\EBOS\profile.png';g='fs-wallpaper';contains=@()},
+  @{p='%ProgramFiles%\WindhawkCLI\whcli.exe';g='windhawk-styler';contains=@()}
 )
 foreach ($e in $files) {
   if (-not (Test-Gate $e.g)) { $na++; continue }
@@ -1313,6 +1364,26 @@ foreach ($e in $files) {
     if (-not $hit) { $bad++; $out += ('FILE WRONG CONTENT     ' + $e.p + ' missing [' + $c + ']') }
   }
 }
+# !file actions delete these paths and nothing ever checked the delete. A file left behind
+# by a failed delete is a live Defender component (WdNisDrv.sys) or a re-created OneDrive
+# folder, so absence is worth asserting.
+$absent = @(
+  @{p='%SystemDrive%\OneDriveTemp';g='remove-onedrive'},
+  @{p='%ProgramData%\Microsoft OneDrive';g='remove-onedrive'},
+  @{p='%systemroot%\System32\SecurityHealthSystray.exe';g='disable-defender'},
+  @{p='%systemroot%\System32\SecurityHealthHost.exe';g='disable-defender'},
+  @{p='%systemroot%\System32\SecurityHealthCore.dll';g='disable-defender'},
+  @{p='%systemroot%\System32\SecurityHealthUdk.dll';g='disable-defender'},
+  @{p='%systemroot%\System32\drivers\WdNisDrv.sys';g='disable-defender'},
+  @{p='%systemroot%\System32\drivers\wd\WdNisDrv.sys';g='disable-defender'}
+)
+foreach ($e in $absent) {
+  if (-not (Test-Gate $e.g)) { $na++; continue }
+  $checked++
+  $full = [Environment]::ExpandEnvironmentVariables($e.p)
+  if (Test-Path -LiteralPath $full) { $bad++; $out += ('FILE STILL PRESENT     ' + $e.p) }
+}
+
 # cursor set completeness: 17x ebos-*.ani expected (legacy names containing 'hq' excluded)
 if (Test-Gate '') {
   $checked++
@@ -1332,6 +1403,81 @@ if (Test-Gate '') {
       $isPng = ($b.Length -gt 4 -and $b[0] -eq 0x89 -and $b[1] -eq 0x50 -and $b[2] -eq 0x4E -and $b[3] -eq 0x47)
       if (-not $isIco -or $isPng) { $bad++; $out += ('ICON NOT ICO           ' + $ico + ' (renamed PNG, wanted ICO 00 00 01 00)') }
     } catch {}
+  }
+}
+
+# --- options that had no verification at all -------------------------------
+# A coverage pass over playbook.conf found five options with actions but zero checks:
+# browser-brave, disable-webview2, remove-accessibility, fs-small-icons, offline-mode.
+# Each check below mirrors what its action actually does - no invented success conditions.
+
+if (Test-Gate 'offline-mode') {
+  $checked++
+  $flag = Join-Path $env:windir 'EBOS\offline-mode.flag'
+  if (-not (Test-Path -LiteralPath $flag)) { $bad++; $out += ('OFFLINE FLAG MISSING   ' + $flag) }
+}
+
+if (Test-Gate 'disable-webview2') {
+  $checked++
+  $wvDirs = @()
+  if (${env:ProgramFiles(x86)}) { $wvDirs += (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\EdgeWebView') }
+  if ($env:ProgramFiles)      { $wvDirs += (Join-Path $env:ProgramFiles 'Microsoft\EdgeWebView') }
+  foreach ($d in $wvDirs) {
+    if (Test-Path -LiteralPath $d) { $bad++; $out += ('WEBVIEW2 STILL THERE   ' + $d) }
+  }
+}
+
+if (Test-Gate 'remove-accessibility') {
+  $checked++
+  foreach ($t in @('Narrator.exe','Magnify.exe','osk.exe','VoiceAccess.exe','LiveCaptions.exe')) {
+    $f = Join-Path $env:windir ('System32\' + $t)
+    if (Test-Path -LiteralPath $f) { $bad++; $out += ('ACCESSIBILITY STILL PRESENT  ' + $t) }
+  }
+}
+
+if (Test-Gate 'browser-brave') {
+  $checked++
+  $brave = Join-Path $env:ProgramFiles 'BraveSoftware\Brave-Browser\Application\brave.exe'
+  if (-not (Test-Path -LiteralPath $brave)) {
+    # An offline run with no bundled installer skips Brave on purpose. phase1 drops a flag
+    # for exactly that case and deletes it at the start of every run, so this cannot be
+    # satisfied by a skip recorded during some earlier run.
+    $skipFlag = Join-Path $env:windir 'EBOS\brave-skip.flag'
+    if (-not (Test-Path -LiteralPath $skipFlag)) { $bad++; $out += ('BRAVE NOT INSTALLED    ' + $brave) }
+  }
+}
+
+if (Test-Gate 'fs-small-icons') {
+  # The action seeds the AME default hive when it exists, otherwise the on-disk
+  # NTUSER.DAT which it unloads again - nothing readable is left in that second case.
+  $ameHive = 'Registry::HKEY_USERS\AME_UserHive_Default'
+  if (-not (Test-Path $ameHive)) {
+    $na++
+  } else {
+    $checked++
+    $bag = $ameHive + '\Software\Microsoft\Windows\Shell\Bags\1\Desktop'
+    if (-not (Test-Path $bag)) {
+      $bad++; $out += ('SMALL ICONS NOT SET    ' + $bag + ' (key absent)')
+    } else {
+      $sz = (Get-Item -LiteralPath $bag -ErrorAction SilentlyContinue).GetValue('IconSize', $null)
+      if ($null -eq $sz -or [int]$sz -ne 32) { $bad++; $out += ('SMALL ICONS NOT SET    IconSize=' + $sz) }
+    }
+  }
+}
+
+# windhawk-styler was the only software-installing option with no verification at all.
+# Its log is appended to across runs, so "contains the marker" would let an older success
+# hide a newer failure - the last non-empty line is what counts.
+if (Test-Gate 'windhawk-styler') {
+  $checked++
+  $whLog = Join-Path $env:windir 'EBOS\windhawk-styler.log'
+  if (-not (Test-Path -LiteralPath $whLog)) {
+    $bad++; $out += ('WINDHAWK LOG MISSING   ' + $whLog)
+  } else {
+    $lastLine = @(Get-Content -LiteralPath $whLog -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }) | Select-Object -Last 1
+    if ($lastLine -notmatch 'windhawk-styler done') {
+      $bad++; $out += ('WINDHAWK INCOMPLETE    last line: ' + $lastLine)
+    }
   }
 }
 

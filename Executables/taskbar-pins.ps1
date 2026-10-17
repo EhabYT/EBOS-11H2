@@ -1,3 +1,17 @@
+# NOT INVOKED BY THE PLAYBOOK. Kept for reference only. Read this before wiring it up.
+#
+# The Favorites / FavoritesResolve blobs below are a serialized shell structure captured
+# on a machine whose profile was literally named "user". The path
+#   C:\Users\user\AppData\Roaming\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\File Explorer.lnk
+# is embedded verbatim inside the blob as ASCII bytes, and nothing in this script rewrites
+# it - there is no .Replace() anywhere. On any other machine the pin resolves to a path
+# that does not exist. Patching the bytes by hand is not safe either, because the blob
+# carries its own length fields.
+#
+# phase2-strip.yml and phase5-apply.yml do the AuxilliaryPins half of this inline. The
+# File Explorer pin itself is applied nowhere. To ship it, recapture both blobs from a
+# real signed-in profile of the target image, then wire the result.
+
 $ErrorActionPreference = 'SilentlyContinue'
 
 $personalizationMarker = Join-Path $env:windir 'EBOS\.personalization-applied'

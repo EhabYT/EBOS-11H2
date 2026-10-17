@@ -9,3 +9,5 @@ actions:
   - !task: {path: 'Tasks\phase5-apply.yml'}
   - !task: {path: 'Tasks\phase6-extended.yml'}
   - !task: {path: 'Tasks\phase7-privacy.yml'}
+  - !task: {path: 'Tasks\phase7b-windhawk-styler.yml'}
+  - !task: {path: 'Tasks\phase8-user-hive.yml'}
