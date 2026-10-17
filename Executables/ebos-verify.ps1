@@ -1184,7 +1184,20 @@ $tasks = @(
   @{t='\Microsoft\Windows\Subscription\LicenseAcquisition';g=''},
   @{t='\Microsoft\Windows\Workplace Join\Automatic-Device-Join';g=''},
   @{t='\Microsoft\Windows\Workplace Join\Device-Sync';g=''},
-  @{t='\Microsoft\Windows\Workplace Join\Recovery-Check';g=''}
+  @{t='\Microsoft\Windows\Workplace Join\Recovery-Check';g=''},
+  # Registered by the personalization-guard block in phase 5, not by a !scheduledTask
+  # action, so it was never in this table. One trigger, at logon, forever.
+  @{t='\EBOS Personalization Guard';g='';op='create'},
+  # Installed unconditionally by crossdevice-purge.ps1 (phase 2) and
+  # crossdevice-neuter.ps1 (phase 7). Both log 'logon guard installed' but neither
+  # fails when schtasks /Create silently does nothing.
+  @{t='\EBOS-ResumeGuard';g='';op='create'},
+  # Created from XML by setup-timerresolution.ps1, which phase 5 runs ungated. The
+  # output of that schtasks call is discarded, so a failure would be invisible.
+  @{t='\EBOS-TimerResolution';g='';op='create'},
+  # Left behind by older EBOS builds; both scripts delete it. Absent is the pass,
+  # so this is safe on a clean install where it never existed.
+  @{t='\Microsoft\Windows\Shell\EBOS-X Resume Guard';g='';op='delete'}
 )
 foreach ($e in $tasks) {
   if (-not (Test-Gate $e.g)) { $na++; continue }
@@ -1193,6 +1206,16 @@ foreach ($e in $tasks) {
   if ($e.op -eq 'delete') {
     $checked++
     if ($allTasks.ContainsKey($e.t)) { $bad++; $out += ('TASK STILL PRESENT     ' + $e.t + ' = ' + $allTasks[$e.t]) }
+    continue
+  }
+  # Tasks the playbook registers itself. These are NOT 'disable' rows: absence is a
+  # failure, because a silent Register-ScheduledTask or schtasks /Create leaves no
+  # trace and errorAction: Ignore swallows the error. 'Disabled' also fails - a task
+  # that is present but switched off never runs at logon.
+  if ($e.op -eq 'create') {
+    $checked++
+    if (-not $allTasks.ContainsKey($e.t)) { $bad++; $out += ('TASK NOT CREATED       ' + $e.t) }
+    elseif ($allTasks[$e.t] -eq 'Disabled') { $bad++; $out += ('TASK CREATED DISABLED  ' + $e.t) }
     continue
   }
   if (-not $allTasks.ContainsKey($e.t)) { $na++; continue }

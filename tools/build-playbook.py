@@ -278,6 +278,88 @@ def check_powershell(report, docs):
     report.note("%d PowerShell snippets, %d unbalanced" % (snippets, broken))
 
 
+def check_tasks(report):
+    """Every scheduled task the playbook registers must be covered by verify.
+
+    A Register-ScheduledTask or schtasks /Create that fails leaves no trace, and
+    most of these blocks run with errorAction: Ignore - so the only way to notice
+    is to read the task back afterwards. Round 20 found two persistent tasks
+    (the personalization guard and the resume guard) that nothing ever checked.
+    """
+    verified = set()
+    verify = ROOT / "Executables" / "ebos-verify.ps1"
+    if verify.exists():
+        text = verify.read_text(encoding="utf-8")
+        # Verify rows carry the task path (leading backslash); a registration names the
+        # task only. Normalise both sides before comparing.
+        verified = {
+            name.lstrip("\\")
+            for name in re.findall(r"@\{t='((?:[^'\\]|\\.)*)'", text)
+        }
+
+    # Tasks that legitimately are not there when verify runs, or that clean
+    # themselves up. Each entry is a promise to a human, so keep the reason.
+    transient = {
+        "EBOSDefenderCleanup":
+            "created at install, self-deletes at first logon (nuke-defender-files.ps1)",
+        "EBOSDefenderRestartNotice":
+            "created at install, self-deletes at first logon (defender-restart-notice.ps1)",
+        "EBOSDefenderKeepDisabled":
+            "created by the cleanup pass after the first reboot, not before",
+    }
+
+    registered = {}
+    sources = list((ROOT / "Configuration").rglob("*.yml")) + list(
+        (ROOT / "Executables").glob("*.ps1")
+    )
+    for path in sources:
+        if path.name == "ebos-verify.ps1":
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+
+        assignment = dict(
+            re.findall(r"^\s*\$(\w+)\s*=\s*'([^']*)'", text, re.M)
+        )
+
+        # Names are quoted as often as not, and one of them contains a space
+        # ("EBOS Personalization Guard"), so a bare [^\s]+ capture truncates it.
+        NAME = r"(?:'([^']*)'|\"([^\"]*)\"|(\S+))"
+        found = []
+        for match in re.finditer(
+            r"Register-ScheduledTask[^\n]*?-TaskName\s+" + NAME, text
+        ):
+            found.append(next(g for g in match.groups() if g is not None))
+        for match in re.finditer(
+            r"schtasks(?:\.exe)?\s+/Create[^\n]*?/TN\s+" + NAME, text, re.I
+        ):
+            found.append(next(g for g in match.groups() if g is not None))
+
+        for name in found:
+            if name.startswith("$"):
+                name = assignment.get(name[1:], name)
+            if name.startswith("$"):
+                continue  # computed at runtime, cannot be checked statically
+            registered.setdefault(name.lstrip("\\"), str(path.relative_to(ROOT)))
+
+    unchecked = []
+    for name, where in sorted(registered.items()):
+        if name in verified:
+            continue
+        if name in transient:
+            continue
+        unchecked.append((name, where))
+
+    for name, where in unchecked:
+        report.error(
+            "task '%s' is registered in %s but ebos-verify.ps1 never checks it" % (name, where)
+        )
+
+    report.note(
+        "%d task(s) registered by the playbook, %d verified, %d documented transient"
+        % (len(registered), len(set(registered) & verified), len(set(registered) & set(transient)))
+    )
+
+
 def check_assets(report, docs):
     names = set()
 
@@ -418,6 +500,7 @@ def main():
     docs = check_yaml(report, conf["options"] if conf else [])
     check_powershell(report, docs)
     check_assets(report, docs)
+    check_tasks(report)
     files = collect_files(report)
 
     if args.require_bundles:
