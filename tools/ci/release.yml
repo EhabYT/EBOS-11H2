@@ -1,0 +1,140 @@
+name: release
+
+# Copy into .github/workflows/ with a token that can write workflows.
+# This recipe builds the exact tag, then attaches to (or creates) a DRAFT release.
+# It never publishes a release or silently replaces existing assets.
+# The tag must equal <Version> in playbook.conf; do not add a "v" prefix.
+
+on:
+  push:
+    tags: ["*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (must equal playbook.conf Version)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  # Never interpolate a dispatch input directly into a shell command.
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # A manual dispatch otherwise checks out the selected branch, NOT this tag.
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: pip install --quiet -r tools/requirements-build.txt
+
+      - name: Check tag and source revision
+        run: |
+          set -euo pipefail
+          version=$(python3 - <<'EOF'
+          import xml.etree.ElementTree as ET
+          print(ET.parse("playbook.conf").getroot().findtext("Version").strip())
+          EOF
+          )
+          if [[ ! "$RELEASE_TAG" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || [ "$RELEASE_TAG" != "$version" ]; then
+            echo "::error::Release tag must equal the numeric Version in playbook.conf."
+            exit 1
+          fi
+          expected=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
+          actual=$(git rev-parse HEAD)
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::Checkout is not the requested tag."
+            exit 1
+          fi
+          echo "Building $RELEASE_TAG from $actual"
+
+      - name: Regression tests
+        run: python3 -m unittest discover -s tools/tests -v
+
+      - name: Verifier logic tests (mocked reads)
+        shell: pwsh
+        run: ./tools/tests/test_verify_tasks.ps1
+
+      - name: Static checks
+        run: python3 tools/check-ps-syntax.py --quiet
+
+      - name: Build
+        # Not an offline-complete build: no external bundle binaries are fetched here.
+        # Use --require-bundles only after provisioning the documented local inputs.
+        run: python3 tools/build-playbook.py
+
+      - name: Verify the archive with 7-Zip
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq p7zip-full
+          shopt -s nullglob
+          archives=(release/*.apbx)
+          [ "${#archives[@]}" -eq 1 ] || { echo "Expected exactly one .apbx"; exit 1; }
+          7z t -p"malte" "${archives[0]}"
+          listing="$RUNNER_TEMP/ebos-archive-list.txt"
+          7z l -slt -p"malte" "${archives[0]}" > "$listing"
+          if grep -q '^Encrypted = -$' "$listing" || ! grep -q '^Encrypted = +$' "$listing"; then
+            echo "::error::Archive file contents are not fully encrypted."
+            exit 1
+          fi
+          if 7z l "${archives[0]}" </dev/null >/dev/null 2>&1; then
+            echo "::error::Archive listed without a password; header encryption is missing."
+            exit 1
+          fi
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd release
+          sha256sum -- *.apbx | tee SHA256SUMS.txt
+
+      - name: Attach to a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || { echo "Invalid release tag"; exit 1; }
+          shopt -s nullglob
+          archives=(release/*.apbx)
+          [ "${#archives[@]}" -eq 1 ] || { echo "Expected exactly one .apbx"; exit 1; }
+          [ -s release/SHA256SUMS.txt ] || { echo "Missing checksums"; exit 1; }
+          # Bash arrays preserve filenames. `files=$(ls ...) release/SHA256SUMS.txt`
+          # instead attempts to EXECUTE the checksum file and never uploads anything.
+          files=("${archives[0]}" release/SHA256SUMS.txt)
+          if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft); then
+            if [ "$draft" != true ]; then
+              echo "::error::Refusing to modify a published release."
+              exit 1
+            fi
+            gh release upload "$RELEASE_TAG" "${files[@]}"
+          else
+            gh release create "$RELEASE_TAG" "${files[@]}" \
+              --draft --verify-tag --title "EBOS $RELEASE_TAG" --generate-notes
+          fi
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "### EBOS draft build"
+            echo
+            cat release/SHA256SUMS.txt 2>/dev/null || echo "no archive produced"
+            echo
+            echo "Static checks are not a Windows integration test. Review missing-bundle warnings before release."
+          } >> "$GITHUB_STEP_SUMMARY"

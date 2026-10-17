@@ -1,0 +1,30 @@
+---
+# Windhawk transparency for the taskbar and File Explorer.
+#
+# privilege: Admin, not TrustedInstaller. windhawk-cli registers a Windows service, and
+# service creation from a TI context behaves inconsistently. This is the only phase that
+# does not run as TI, deliberately.
+#
+# Ordering: registered after phase7. phase7 installs the Windhawk GUI; with the GUI present
+# windhawk-cli enters deferential mode and manages the GUI's mod store, which is the
+# combination it documents. Reversing the order lets the supervisor task adopt mods mid-run.
+#
+# Unattended contract:
+#   - no dialogs, no Read-Host, no UAC (the wizard is already elevated)
+#   - bundled installer is used whenever present; the network is only touched when the
+#     wizard's Offline Mode checkbox is NOT ticked
+#   - explorer.exe is restarted at the end and the script waits for the shell to return
+#   - every failure is a non-zero exit code plus a line in %WINDIR%\EBOS\failures
+#
+# Gated on the "windhawk-styler" option (default unticked): a standard EBOS apply is unchanged.
+privilege: Admin
+actions:
+  - !writeStatus: {status: "Applying Windhawk transparency", option: "windhawk-styler"}
+
+  - !run:
+      option: "windhawk-styler"
+      exeDir: true
+      exe: "PowerShell"
+      args: '-NoP -NonInteractive -EP Bypass -File .\configure-windhawk-styler.ps1 -AddDefenderExclusion'
+      weight: 100
+      wait: true

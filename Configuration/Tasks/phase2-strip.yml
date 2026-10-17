@@ -437,8 +437,8 @@ actions:
         }
 
         foreach ($exe in @(
-          """$env:SystemRoot\System32\OneDriveSetup.exe""",
-          """$env:SystemRoot\SysWOW64\OneDriveSetup.exe"""
+          "$env:SystemRoot\System32\OneDriveSetup.exe",
+          "$env:SystemRoot\SysWOW64\OneDriveSetup.exe"
         )) {
           if (Test-Path $exe) {
             try {

@@ -1,3 +1,13 @@
+# NOT INVOKED BY THE PLAYBOOK. Kept for reference only.
+#
+# The same job is done inline in Configuration/Tasks/phase2-strip.yml - the block that
+# writes an empty LayoutModification.xml and DefaultLayouts.xml, stops
+# StartMenuExperienceHost, then clears the *tilegrid* caches twice. That version is
+# strictly better than this one: it writes the empty layout file instead of scheduling a
+# RunOnce delete for the next logon, and it stops the shell between the two cache passes
+# so the tile grid cannot be written back on exit. Wiring this script up would delete the
+# file the inline block just wrote.
+
 $ErrorActionPreference = 'SilentlyContinue'
 
 $personalizationMarker = Join-Path $env:windir 'EBOS\.personalization-applied'

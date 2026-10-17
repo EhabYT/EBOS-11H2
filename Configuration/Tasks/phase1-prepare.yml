@@ -4,7 +4,6 @@ actions:
   - !powerShell:
     wait: true
     command: |
-      Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
       $title = 'EBOS Cannot Install'
       $url = 'www.microsoft.com/software-download/windows11'
       if (Test-Path -LiteralPath ($env:windir + '\EBOS')) {
@@ -38,7 +37,10 @@ actions:
         $oldEbosLabel = $productName.Trim()
         if (-not $oldEbosLabel) { $oldEbosLabel = 'a previous EBOS version' }
         $msg = 'EBOS cannot be installed over ' + $oldEbosLabel + '. Please reinstall stock Windows first. The latest version can be downloaded from ' + $url
-        [System.Windows.Forms.MessageBox]::Show($msg, $title, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error, [System.Windows.Forms.MessageBoxDefaultButton]::Button1, [System.Windows.Forms.MessageBoxOptions]::DefaultDesktopOnly) | Out-Null
+        # Non-interactive failure path: no modal dialog, so an unattended apply never
+        # blocks waiting for a click. reason -> %WINDIR%\EBOS\failure.txt and stdout.
+        try { New-Item -ItemType Directory -Path (Join-Path $env:windir 'EBOS') -Force -ErrorAction SilentlyContinue | Out-Null; Set-Content -LiteralPath (Join-Path $env:windir 'EBOS\failure.txt') -Value $msg -Force -ErrorAction SilentlyContinue } catch {}
+        [Console]::Out.WriteLine($msg)
         Stop-Process -Name 'AME Beta','AME Wizard Beta','AME','TrustedUninstaller.CLI' -Force -ErrorAction SilentlyContinue
         $global:LASTEXITCODE = 1
         exit 1
@@ -87,7 +89,10 @@ actions:
       }
       if ($detected) {
         $msg = 'EBOS cannot be installed over ' + $detected + '. EBOS supports stock Windows 10 22H2 and Windows 11 23H2, 24H2, 25H2 and 26H2. The latest version can be downloaded from ' + $url
-        [System.Windows.Forms.MessageBox]::Show($msg, $title, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error, [System.Windows.Forms.MessageBoxDefaultButton]::Button1, [System.Windows.Forms.MessageBoxOptions]::DefaultDesktopOnly) | Out-Null
+        # Non-interactive failure path: no modal dialog, so an unattended apply never
+        # blocks waiting for a click. reason -> %WINDIR%\EBOS\failure.txt and stdout.
+        try { New-Item -ItemType Directory -Path (Join-Path $env:windir 'EBOS') -Force -ErrorAction SilentlyContinue | Out-Null; Set-Content -LiteralPath (Join-Path $env:windir 'EBOS\failure.txt') -Value $msg -Force -ErrorAction SilentlyContinue } catch {}
+        [Console]::Out.WriteLine($msg)
         Stop-Process -Name 'AME Beta','AME Wizard Beta','AME','TrustedUninstaller.CLI' -Force -ErrorAction SilentlyContinue
         $global:LASTEXITCODE = 1
         exit 1
@@ -96,7 +101,6 @@ actions:
   - !powerShell:
     wait: true
     command: |
-      Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
       $url = 'www.microsoft.com/software-download/windows11'
       $build = 0
       try { $build = [int](Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name 'CurrentBuildNumber' -ErrorAction SilentlyContinue).CurrentBuildNumber } catch {}
@@ -110,7 +114,10 @@ actions:
         elseif ($build -gt 22621 -and $build -lt 26100) { $osName = 'this version of Windows 11 (build ' + $build + ')' }
         elseif ($build -eq 28000) { $osName = 'Windows 11 26H1, which is a different servicing branch and is not supported' }
         $msg = 'EBOS does not support ' + $osName + '. EBOS supports Windows 10 21H2 and 22H2, and Windows 11 23H2, 24H2, 25H2 and 26H2. The latest supported version can be downloaded from ' + $url
-        [System.Windows.Forms.MessageBox]::Show($msg, 'EBOS Cannot Install', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error, [System.Windows.Forms.MessageBoxDefaultButton]::Button1, [System.Windows.Forms.MessageBoxOptions]::DefaultDesktopOnly) | Out-Null
+        # Non-interactive failure path: no modal dialog, so an unattended apply never
+        # blocks waiting for a click. reason -> %WINDIR%\EBOS\failure.txt and stdout.
+        try { New-Item -ItemType Directory -Path (Join-Path $env:windir 'EBOS') -Force -ErrorAction SilentlyContinue | Out-Null; Set-Content -LiteralPath (Join-Path $env:windir 'EBOS\failure.txt') -Value $msg -Force -ErrorAction SilentlyContinue } catch {}
+        [Console]::Out.WriteLine($msg)
         Stop-Process -Name 'AME Beta','AME Wizard Beta','AME','TrustedUninstaller.CLI' -Force -ErrorAction SilentlyContinue
         $global:LASTEXITCODE = 1
         exit 1
@@ -119,7 +126,6 @@ actions:
   - !powerShell:
     wait: true
     command: |
-      Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
       $encrypted = $false
       try {
         $sysDrive = $env:SystemDrive
@@ -135,12 +141,63 @@ actions:
           'Press Win+S and search for Manage BitLocker or Device Encryption in order to turn it off.'
         )
         $msg = $msgLines -join [Environment]::NewLine
-        [System.Windows.Forms.MessageBox]::Show($msg, 'EBOS Cannot Install', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error, [System.Windows.Forms.MessageBoxDefaultButton]::Button1, [System.Windows.Forms.MessageBoxOptions]::DefaultDesktopOnly) | Out-Null
+        # Non-interactive failure path: no modal dialog, so an unattended apply never
+        # blocks waiting for a click. reason -> %WINDIR%\EBOS\failure.txt and stdout.
+        try { New-Item -ItemType Directory -Path (Join-Path $env:windir 'EBOS') -Force -ErrorAction SilentlyContinue | Out-Null; Set-Content -LiteralPath (Join-Path $env:windir 'EBOS\failure.txt') -Value $msg -Force -ErrorAction SilentlyContinue } catch {}
+        [Console]::Out.WriteLine($msg)
         Stop-Process -Name 'AME Beta','AME Wizard Beta','AME','TrustedUninstaller.CLI' -Force -ErrorAction SilentlyContinue
         $global:LASTEXITCODE = 1
         exit 1
       }
       $global:LASTEXITCODE = 0
+
+  # Offline mode is an option, and an AME option only gates an action - it is not readable as
+  # a variable inside the PowerShell that runs. So the option writes a flag file here, after
+  # the guard above has already decided whether this image is installable, and later steps
+  # read the flag instead of trying the network.
+  - !powerShell:
+    option: "offline-mode"
+    wait: true
+    errorAction: Ignore
+    command: |
+      $ebosDir = Join-Path $env:windir 'EBOS'
+      New-Item -ItemType Directory -Path $ebosDir -Force -ErrorAction SilentlyContinue | Out-Null
+      Set-Content -LiteralPath (Join-Path $ebosDir 'offline-mode.flag') -Value '1' -Encoding ascii -Force
+      $global:LASTEXITCODE = 0
+
+  # The wizard-level "Internet" requirement had to go for an offline image to install at all.
+  # This puts the same gate back in software: with offline mode unticked, a machine that
+  # cannot reach the download host is stopped here, before any change has been made, which is
+  # what the requirement used to do. Ticking offline mode is the documented way to skip it.
+  - !powerShell:
+    wait: true
+    errorAction: Ignore
+    command: |
+      if (Test-Path -LiteralPath (Join-Path $env:windir 'EBOS\offline-mode.flag')) {
+        $global:LASTEXITCODE = 0
+        return
+      }
+      $online = $false
+      try {
+        $req = [System.Net.WebRequest]::Create('https://aka.ms/vs/17/release/vc_redist.x64.exe')
+        $req.Method = 'Head'
+        $req.Timeout = 10000
+        $resp = $req.GetResponse()
+        $resp.Close()
+        $online = $true
+      } catch { $online = $false }
+      if (-not $online) {
+        $msg = 'EBOS needs an internet connection to fetch its components. Connect to the internet and run EBOS again, or bundle vc_redist.x64.exe and BraveSetup.exe next to the scripts and tick Offline Mode.'
+        # Non-interactive failure path: no modal dialog, so an unattended apply never
+        # blocks waiting for a click. reason -> %WINDIR%\EBOS\failure.txt and stdout.
+        try { New-Item -ItemType Directory -Path (Join-Path $env:windir 'EBOS') -Force -ErrorAction SilentlyContinue | Out-Null; Set-Content -LiteralPath (Join-Path $env:windir 'EBOS\failure.txt') -Value $msg -Force -ErrorAction SilentlyContinue } catch {}
+        [Console]::Out.WriteLine($msg)
+        Stop-Process -Name 'AME Beta','AME Wizard Beta','AME','TrustedUninstaller.CLI' -Force -ErrorAction SilentlyContinue
+        $global:LASTEXITCODE = 1
+        exit 1
+      }
+      $global:LASTEXITCODE = 0
+
   - !writeStatus: {status: "Blocking Telemetry"}
   - !cmd: {command: 'mkdir "%WINDIR%\EBOS" 2>nul'}
   - !cmd: {command: 'mkdir "%WINDIR%\EBOS\Tools" 2>nul'}
@@ -209,6 +266,38 @@ actions:
   - !cmd: {command: 'cmd /c echo remove-onedrive>>"%WINDIR%\\EBOS\\ebos-options.txt"', option: "remove-onedrive"}
   - !cmd: {command: 'cmd /c echo remove-store>>"%WINDIR%\\EBOS\\ebos-options.txt"', option: "remove-store"}
   - !cmd: {command: 'cmd /c echo remove-xbox>>"%WINDIR%\\EBOS\\ebos-options.txt"', option: "remove-xbox"}
+  - !cmd: {command: 'cmd /c echo windhawk-styler>>"%WINDIR%\\EBOS\\ebos-options.txt"', option: "windhawk-styler"}
+  - !cmd: {command: 'cmd /c echo offline-mode>>"%WINDIR%\\EBOS\\ebos-options.txt"', option: "offline-mode"}
+
+  # Capture this BEFORE phase 7 rewrites Installed=1. Timer resolution is fresh-install
+  # only: verification must not flag a user-disabled tweak on a re-apply. Binding the
+  # snapshot to this run's option-file timestamp rejects stale snapshots if this step
+  # fails. No prompt: a write failure is reported here and by the phase-8 verifier.
+  - !powerShell:
+    wait: true
+    errorAction: Ignore
+    command: |
+      try {
+        $dir = Join-Path $env:windir 'EBOS'
+        $optionFile = Get-Item -LiteralPath (Join-Path $dir 'ebos-options.txt') -ErrorAction Stop
+        $mode = 'fresh-install'
+        $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\EBOS\EBOS')
+        if ($null -eq $key) { $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\EBOS\EBOS-X') }
+        if ($null -ne $key) {
+          try { if ($key.GetValue('Installed') -eq 1) { $mode = 'reapply' } }
+          finally { $key.Close() }
+        }
+        $context = [ordered]@{
+          schema = 1
+          mode = $mode
+          optionsStamp = $optionFile.LastWriteTimeUtc.Ticks.ToString()
+        }
+        $context | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dir 'verify-context.json') -Encoding UTF8 -Force -ErrorAction Stop
+        $global:LASTEXITCODE = 0
+      } catch {
+        [Console]::Out.WriteLine('VERIFY CONTEXT WRITE FAILED: ' + $_.Exception.Message)
+        $global:LASTEXITCODE = 1
+      }
 
   - !writeStatus: {status: "Importing Power Plans"}
   - !powerShell:
@@ -342,24 +431,56 @@ actions:
 
   - !writeStatus: {status: "Installing VC++ Redist"}
   - !powerShell:
+    exeDir: true
     wait: true
     command: |
+      $offline = Test-Path -LiteralPath (Join-Path $env:windir 'EBOS\offline-mode.flag')
       $dest = Join-Path $env:TEMP 'vcredist.exe'
       $ok = $false
-      try {
-        $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile $dest -UseBasicParsing -TimeoutSec 120
-        $ok = (Test-Path -LiteralPath $dest) -and ((Get-Item -LiteralPath $dest).Length -gt 0)
-      } catch { $ok = $false }
+      # Bundled copy first. An offline image ships vc_redist.x64.exe next to the scripts, and
+      # a bundled copy is also preferable online: it pins the version instead of taking
+      # whatever aka.ms serves that day.
+      $local = Join-Path $PWD 'vc_redist.x64.exe'
+      if (Test-Path -LiteralPath $local) {
+        try {
+          Copy-Item -LiteralPath $local -Destination $dest -Force -ErrorAction Stop
+          $ok = (Test-Path -LiteralPath $dest) -and ((Get-Item -LiteralPath $dest).Length -gt 0)
+        } catch { $ok = $false }
+      }
+      if (-not $ok -and -not $offline) {
+        try {
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile $dest -UseBasicParsing -TimeoutSec 120
+          $ok = (Test-Path -LiteralPath $dest) -and ((Get-Item -LiteralPath $dest).Length -gt 0)
+        } catch { $ok = $false }
+      }
       if (-not $ok) {
-        Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
-        $msg = 'EBOS requires an active internet connection to download required components (Visual C++ Redistributable). Please connect to the internet and run EBOS again.'
-        [System.Windows.Forms.MessageBox]::Show($msg, 'EBOS Cannot Install', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error, [System.Windows.Forms.MessageBoxDefaultButton]::Button1, [System.Windows.Forms.MessageBoxOptions]::DefaultDesktopOnly) | Out-Null
+        if ($offline) {
+          # Offline run with no bundled redist. Skipping beats aborting the whole playbook on a
+          # machine that cannot download it, but the omission is recorded so the verify step and
+          # the user both see which games may launch without the VC++ runtime.
+          $log = Join-Path $env:windir 'EBOS\ebos-skipped.txt'
+          Add-Content -LiteralPath $log -Value ((Get-Date -Format s) + ' - VC++ Redist skipped: offline mode, vc_redist.x64.exe not bundled')
+          $global:LASTEXITCODE = 0
+          return
+        }
+        $msg = 'EBOS requires an active internet connection to download required components (Visual C++ Redistributable). Please connect to the internet and run EBOS again, or bundle vc_redist.x64.exe next to the scripts and tick offline mode.'
+        # Non-interactive failure path: no modal dialog, so an unattended apply never
+        # blocks waiting for a click. reason -> %WINDIR%\EBOS\failure.txt and stdout.
+        try { New-Item -ItemType Directory -Path (Join-Path $env:windir 'EBOS') -Force -ErrorAction SilentlyContinue | Out-Null; Set-Content -LiteralPath (Join-Path $env:windir 'EBOS\failure.txt') -Value $msg -Force -ErrorAction SilentlyContinue } catch {}
+        [Console]::Out.WriteLine($msg)
         Stop-Process -Name 'AME Beta','AME Wizard Beta','AME','TrustedUninstaller.CLI' -Force -ErrorAction SilentlyContinue
         $global:LASTEXITCODE = 1
         exit 1
       }
-      try { Start-Process -FilePath $dest -ArgumentList '/install','/quiet','/norestart' -Wait } catch {}
+      # Silent flag set for the VC++ Redistributable (a Burn bundle, not Inno Setup):
+      #   /install /quiet /norestart  documented unattended switches
+      #   /log <file>                 Burn's own log, invaluable when it fails on a locked-down image
+      # Inno flags (/VERYSILENT /SUPPRESSMSGBOXES /NORESTART) are NOT passed: this is not an
+      # Inno installer, and an unrecognised switch can make it show a usage dialog - which is
+      # exactly what would block an unattended playbook.
+      $vcredistLog = Join-Path $env:windir 'EBOS\vc_redist.log'
+      try { Start-Process -FilePath $dest -ArgumentList '/install','/quiet','/norestart','/log',$vcredistLog -Wait -WindowStyle Hidden } catch {}
       $global:LASTEXITCODE = 0
 
   - !writeStatus: {status: "Installing DirectX Runtime"}
@@ -373,6 +494,7 @@ actions:
       if (Test-Path $dx) {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $dx
+        # DXSETUP.exe takes /silent only; it does not reboot and has no /norestart switch.
         $psi.Arguments = '/silent'
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
@@ -388,19 +510,51 @@ actions:
 
   - !powerShell:
     option: "browser-brave"
+    exeDir: true
     wait: true
     command: |
+      $offline = Test-Path -LiteralPath (Join-Path $env:windir 'EBOS\offline-mode.flag')
+      # Cleared at the start of every run that ticks Brave. The skip is also written to
+      # ebos-skipped.txt, but that file is appended to across runs, so a marker file that
+      # only exists if THIS run skipped is the only thing verify can trust.
+      $skipFlag = Join-Path $env:windir 'EBOS\brave-skip.flag'
+      Remove-Item -LiteralPath $skipFlag -Force -ErrorAction SilentlyContinue
       $dest = Join-Path $env:TEMP 'BraveSetup.exe'
       $ok = $false
-      try {
-        $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri 'https://laptop-updates.brave.com/latest/winx64' -OutFile $dest -UseBasicParsing -TimeoutSec 180
-        $ok = (Test-Path -LiteralPath $dest) -and ((Get-Item -LiteralPath $dest).Length -gt 0)
-      } catch { $ok = $false }
+      # Bundled first, same reasoning as the VC++ step: offline images carry the installer, and
+      # online runs get a pinned version instead of whatever 'latest' resolves to.
+      foreach ($name in @('BraveSetup.exe', 'brave-setup.exe')) {
+        if ($ok) { break }
+        $local = Join-Path $PWD $name
+        if (Test-Path -LiteralPath $local) {
+          try {
+            Copy-Item -LiteralPath $local -Destination $dest -Force -ErrorAction Stop
+            $ok = (Test-Path -LiteralPath $dest) -and ((Get-Item -LiteralPath $dest).Length -gt 0)
+          } catch { $ok = $false }
+        }
+      }
+      if (-not $ok -and -not $offline) {
+        try {
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri 'https://laptop-updates.brave.com/latest/winx64' -OutFile $dest -UseBasicParsing -TimeoutSec 180
+          $ok = (Test-Path -LiteralPath $dest) -and ((Get-Item -LiteralPath $dest).Length -gt 0)
+        } catch { $ok = $false }
+      }
       if (-not $ok) {
-        Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
-        $msg = 'EBOS requires an active internet connection to download your selected browser (Brave). Please connect to the internet and run EBOS again.'
-        [System.Windows.Forms.MessageBox]::Show($msg, 'EBOS Cannot Install', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error, [System.Windows.Forms.MessageBoxDefaultButton]::Button1, [System.Windows.Forms.MessageBoxOptions]::DefaultDesktopOnly) | Out-Null
+        if ($offline) {
+          # No browser gets installed and Edge may already be stripped later, so this is the
+          # most consequential skip in an offline run. Record it loudly rather than exiting.
+          $log = Join-Path $env:windir 'EBOS\ebos-skipped.txt'
+          Add-Content -LiteralPath $log -Value ((Get-Date -Format s) + ' - Brave skipped: offline mode, BraveSetup.exe not bundled. Bundle it or pick no browser before applying.')
+          Set-Content -LiteralPath $skipFlag -Value '1' -Encoding ascii -Force -ErrorAction SilentlyContinue
+          $global:LASTEXITCODE = 0
+          return
+        }
+        $msg = 'EBOS requires an active internet connection to download your selected browser (Brave). Please connect to the internet and run EBOS again, or bundle BraveSetup.exe next to the scripts and tick offline mode.'
+        # Non-interactive failure path: no modal dialog, so an unattended apply never
+        # blocks waiting for a click. reason -> %WINDIR%\EBOS\failure.txt and stdout.
+        try { New-Item -ItemType Directory -Path (Join-Path $env:windir 'EBOS') -Force -ErrorAction SilentlyContinue | Out-Null; Set-Content -LiteralPath (Join-Path $env:windir 'EBOS\failure.txt') -Value $msg -Force -ErrorAction SilentlyContinue } catch {}
+        [Console]::Out.WriteLine($msg)
         Stop-Process -Name 'AME Beta','AME Wizard Beta','AME','TrustedUninstaller.CLI' -Force -ErrorAction SilentlyContinue
         $global:LASTEXITCODE = 1
         exit 1
@@ -431,6 +585,8 @@ actions:
         }
         try { if (-not $proc.HasExited) { $proc.Kill() } } catch {}
       }
+      # Brave: /silent /install are its documented unattended switches. No /quiet, /VERYSILENT
+      # or /NORESTART - Brave's stub installer ignores or chokes on them.
       Invoke-BrowserSetup -Path $dest -ArgList @('/silent','/install') -ProofPaths @(
         (Join-Path $env:ProgramFiles 'BraveSoftware\Brave-Browser\Application\brave.exe'),
         (Join-Path ${env:ProgramFiles(x86)} 'BraveSoftware\Brave-Browser\Application\brave.exe'),

@@ -378,7 +378,7 @@ actions:
     command: |
       foreach ($k in @('DefenderApiLogger','DefenderAuditLogger')) {
         try {
-          $p = """HKLM:\SYSTEM\CurrentControlSet\Control\WMI\Autologger\$k"""
+          $p = "HKLM:\SYSTEM\CurrentControlSet\Control\WMI\Autologger\$k"
           if (Test-Path $p) {
             Set-ItemProperty -Path $p -Name 'Start' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
           }
@@ -510,9 +510,18 @@ actions:
         'SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors',
         'SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting'
       )
-      foreach ($scope in @('Registry::HKEY_CURRENT_USER','Registry::HKEY_USERS\.DEFAULT')) {
+      # HKCU inside a TrustedInstaller process is SYSTEM's hive, and HKU\.DEFAULT is the
+      # LocalSystem profile, not the template new accounts are built from. Enumerate the
+      # hives that actually matter so the setting reaches real users.
+      $scopes = @('Registry::HKEY_USERS\.DEFAULT')
+      if (Test-Path 'Registry::HKEY_USERS\AME_UserHive_Default') { $scopes += 'Registry::HKEY_USERS\AME_UserHive_Default' }
+      foreach ($s in (Get-ChildItem 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue)) {
+        $n = $s.PSChildName
+        if ($n -like 'S-1-5-21-*' -and $n -notlike '*_Classes') { $scopes += ('Registry::HKEY_USERS\' + $n) }
+      }
+      foreach ($scope in $scopes) {
         foreach ($k in $keys) {
-          Remove-Item -Path """$scope\$k""" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$scope\$k" -Recurse -Force -ErrorAction SilentlyContinue
         }
       }
       $global:LASTEXITCODE = 0
@@ -536,12 +545,12 @@ actions:
       function Set-Cap($p, $v) {
         New-Item -Path $p -Force -ErrorAction SilentlyContinue | Out-Null
         Set-ItemProperty -Path $p -Name 'Value' -Value $v -Type String -Force -ErrorAction SilentlyContinue
-        $np = """$p\NonPackaged"""
+        $np = "$p\NonPackaged"
         New-Item -Path $np -Force -ErrorAction SilentlyContinue | Out-Null
         Set-ItemProperty -Path $np -Name 'Value' -Value $v -Type String -Force -ErrorAction SilentlyContinue
       }
-      foreach ($c in $denyCaps) { Set-Cap """$base\$c""" 'Deny' }
-      foreach ($c in $allowCaps) { Set-Cap """$base\$c""" 'Allow' }
+      foreach ($c in $denyCaps) { Set-Cap "$base\$c" 'Deny' }
+      foreach ($c in $allowCaps) { Set-Cap "$base\$c" 'Allow' }
       $global:LASTEXITCODE = 0
   - !powerShell:
     wait: true
@@ -857,7 +866,15 @@ actions:
     errorAction: Ignore
     command: |
       $caps = @('userAccountInformation','contacts','appointments','phoneCall','phoneCallHistory','email','userDataTasks','chat','appDiagnostics','voipCall','userNotificationListener','voiceActivation')
-      foreach ($scope in @('Registry::HKEY_CURRENT_USER','Registry::HKEY_USERS\.DEFAULT')) {
+      # Same reasoning as the other fanout blocks: HKCU is SYSTEM's hive under
+      # TrustedInstaller, and HKU\.DEFAULT is not the new-account template.
+      $scopes = @('Registry::HKEY_USERS\.DEFAULT')
+      if (Test-Path 'Registry::HKEY_USERS\AME_UserHive_Default') { $scopes += 'Registry::HKEY_USERS\AME_UserHive_Default' }
+      foreach ($s in (Get-ChildItem 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue)) {
+        $n = $s.PSChildName
+        if ($n -like 'S-1-5-21-*' -and $n -notlike '*_Classes') { $scopes += ('Registry::HKEY_USERS\' + $n) }
+      }
+      foreach ($scope in $scopes) {
         foreach ($c in $caps) {
           $p = Join-Path $scope ('SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\' + $c)
           New-Item -Path $p -Force -ErrorAction SilentlyContinue | Out-Null

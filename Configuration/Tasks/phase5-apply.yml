@@ -225,21 +225,6 @@ actions:
   - !registryValue: {path: 'HKCU\System\GameConfigStore', value: 'GameDVR_Enabled', type: REG_DWORD, data: '0', option: "remove-xbox"}
   - !registryValue: {path: 'HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR', value: 'AppCaptureEnabled', type: REG_DWORD, data: '0', option: "remove-xbox"}
   - !registryValue: {path: 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', value: 'Start_AccountNotifications', type: REG_DWORD, data: '0'}
-  - !powerShell:
-    wait: true
-    errorAction: Ignore
-    command: |
-      $marker = Join-Path $env:windir 'EBOS\.personalization-applied'
-      if (Test-Path $marker) { $global:LASTEXITCODE = 0; return }
-      $userHives = @('Registry::HKU\.DEFAULT')
-      if (Test-Path 'Registry::HKEY_USERS\AME_UserHive_Default') { $userHives += 'Registry::HKEY_USERS\AME_UserHive_Default' }
-      Get-ChildItem 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^S-1-5-21-' -and $_.PSChildName -notmatch '_Classes$' } | ForEach-Object { $userHives += ('Registry::HKEY_USERS\' + $_.PSChildName) }
-      foreach ($h in $userHives) {
-        $accent = $h + '\Software\Microsoft\Windows\CurrentVersion\Explorer\Accent'
-        if (-not (Test-Path $accent)) { New-Item -Path $accent -Force -ErrorAction SilentlyContinue | Out-Null }
-        Set-ItemProperty -Path $accent -Name 'StartColorMenu' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-      }
-      $global:LASTEXITCODE = 0
   - !registryValue: {path: 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', value: 'EnableSnapAssistFlyoutOnHover', type: REG_DWORD, data: '0'}
   - !registryValue: {path: 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', value: 'EnableSnapAssistFlyout', type: REG_DWORD, data: '0'}
   - !registryValue: {path: 'HKCU\Software\Microsoft\Windows\CurrentVersion\SmartActionPlatform\ActionManager\Installed\System.DescribeImage', value: 'Enabled', type: REG_DWORD, data: '0'}
@@ -520,7 +505,7 @@ actions:
             }
           }
         } catch {}
-        $userProfiles += """$env:SystemDrive\Users\Default"""
+        $userProfiles += "$env:SystemDrive\Users\Default"
         foreach ($p in $userProfiles) {
           $cbsLocal = Join-Path $p ('AppData\Local\Packages\' + $cbsPkg + '\LocalState')
           if (Test-Path $cbsLocal) {
@@ -658,11 +643,20 @@ actions:
     command: |
       $marker = Join-Path $env:windir 'EBOS\.personalization-applied'
       if (Test-Path $marker) { $global:LASTEXITCODE = 0; return }
-      foreach ($scope in @('Registry::HKEY_CURRENT_USER','Registry::HKEY_USERS\.DEFAULT')) {
-        Remove-ItemProperty -Path """$scope\Software\Microsoft\Windows\CurrentVersion\Explorer\StartPage""" -Name 'ProgramsCache' -Force -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path """$scope\Software\Microsoft\Windows\CurrentVersion\Explorer\StartPage2""" -Name 'ProgramsCache' -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path """$scope\Software\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}""" -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path """$scope\SOFTWARE\Microsoft\Siuf\Rules""" -Name 'PeriodInNanoSeconds' -Force -ErrorAction SilentlyContinue
+      # HKCU inside a TrustedInstaller process is SYSTEM's hive, and HKU\.DEFAULT is the
+      # LocalSystem profile, not the template new accounts are built from. Enumerate the
+      # hives that actually matter so the setting reaches real users.
+      $scopes = @('Registry::HKEY_USERS\.DEFAULT')
+      if (Test-Path 'Registry::HKEY_USERS\AME_UserHive_Default') { $scopes += 'Registry::HKEY_USERS\AME_UserHive_Default' }
+      foreach ($s in (Get-ChildItem 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue)) {
+        $n = $s.PSChildName
+        if ($n -like 'S-1-5-21-*' -and $n -notlike '*_Classes') { $scopes += ('Registry::HKEY_USERS\' + $n) }
+      }
+      foreach ($scope in $scopes) {
+        Remove-ItemProperty -Path "$scope\Software\Microsoft\Windows\CurrentVersion\Explorer\StartPage" -Name 'ProgramsCache' -Force -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path "$scope\Software\Microsoft\Windows\CurrentVersion\Explorer\StartPage2" -Name 'ProgramsCache' -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path "$scope\Software\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}" -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path "$scope\SOFTWARE\Microsoft\Siuf\Rules" -Name 'PeriodInNanoSeconds' -Force -ErrorAction SilentlyContinue
       }
       $global:LASTEXITCODE = 0
   - !powerShell:
@@ -672,8 +666,8 @@ actions:
     command: |
       $src = Join-Path $PWD 'profile.png'
       if (Test-Path $src) {
-        New-Item -ItemType Directory -Path """$env:windir\EBOS""" -Force -ErrorAction SilentlyContinue | Out-Null
-        Copy-Item -Path $src -Destination """$env:windir\EBOS\profile.png""" -Force
+        New-Item -ItemType Directory -Path "$env:windir\EBOS" -Force -ErrorAction SilentlyContinue | Out-Null
+        Copy-Item -Path $src -Destination "$env:windir\EBOS\profile.png" -Force
       }
       $global:LASTEXITCODE = 0
   - !powerShell:
@@ -687,6 +681,10 @@ actions:
         $dst = Join-Path $env:windir 'Resources\Themes\EBOS-dark.theme'
         try { Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction SilentlyContinue } catch {}
       }
+      # Copying the theme is not applying it. Accent + CurrentTheme are written here, because
+      # nothing else in the playbook ever pointed Windows at EBOS-dark.theme.
+      $apply = Join-Path $PWD 'apply-ebos-theme.ps1'
+      if (Test-Path -LiteralPath $apply) { & $apply }
       $global:LASTEXITCODE = 0
   - !powerShell:
     option: "fs-wallpaper"
@@ -727,7 +725,7 @@ actions:
         foreach ($s in $sizes) {
           Copy-Item -Path $src -Destination (Join-Path $publicPic ('Image' + $s + '.png')) -Force -ErrorAction SilentlyContinue
         }
-        $regPath = """HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AccountPicture\Users\$sid"""
+        $regPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AccountPicture\Users\$sid"
         New-Item -Path $regPath -Force -ErrorAction SilentlyContinue | Out-Null
         foreach ($s in $sizes) {
           Set-ItemProperty -Path $regPath -Name ('Image' + $s) -Value (Join-Path $acctPic ('Image' + $s + '.png')) -Type String -Force -ErrorAction SilentlyContinue
@@ -751,7 +749,7 @@ actions:
           # gate was lifted, so an aged install must not be branded differently.
         }
       } catch {}
-      bcdedit /set description """$label"""
+      bcdedit /set description "$label"
       Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation' -Name 'Model' -Value $label
       Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name 'RegisteredOrganization' -Value $label
       $global:LASTEXITCODE = 0
