@@ -7,8 +7,8 @@ AES-256, headers encrypted, password "malte". The wizard decrypts on load; the
 password is not a secret, it exists to keep browsers and antivirus from scanning
 the bundled executables.
 
-The build refuses to produce an archive that the wizard could load but that would
-fail halfway through on a real machine, so it validates before packaging:
+The build performs static preflight checks before packaging. These catch known
+configuration mistakes; they do not prove successful execution on Windows:
 
   * playbook.conf parses and carries every required element
   * SupportedBuilds matches the enforcement gate in phase1-prepare.yml
@@ -16,12 +16,15 @@ fail halfway through on a real machine, so it validates before packaging:
   * every option used by an action is declared in playbook.conf (a typo would
     silently never run), and every declared option is used somewhere
   * every PowerShell snippet balances (delegates to check-ps-syntax.py)
-  * every script and asset an action reaches for exists on disk
+  * recognised literal script/asset references resolve to files on disk
+  * direct scheduled-task registrations have matching create assertions (or documented
+    lifecycle exclusions); unresolved task names fail the check
   * nothing is zero bytes
 
-Bundled binaries (vc_redist, Brave, the windhawk installer and cache) are not
-committed. Their absence is a warning - an online install still works - unless
-you pass --require-bundles, which is what you want for an offline release.
+The VC++/Brave installers and Windhawk CLI/cache are external build inputs.
+Their absence is a warning unless you pass
+--require-bundles. Runtime installation and offline readiness also require the
+Windows bundle check and a VM test; static preflight alone cannot guarantee them.
 
 Usage:
     python3 tools/build-playbook.py                 # validate + build
@@ -33,8 +36,10 @@ import argparse
 import hashlib
 import importlib.util
 import re
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -278,86 +283,13 @@ def check_powershell(report, docs):
     report.note("%d PowerShell snippets, %d unbalanced" % (snippets, broken))
 
 
-def check_tasks(report):
-    """Every scheduled task the playbook registers must be covered by verify.
-
-    A Register-ScheduledTask or schtasks /Create that fails leaves no trace, and
-    most of these blocks run with errorAction: Ignore - so the only way to notice
-    is to read the task back afterwards. Round 20 found two persistent tasks
-    (the personalization guard and the resume guard) that nothing ever checked.
-    """
-    verified = set()
-    verify = ROOT / "Executables" / "ebos-verify.ps1"
-    if verify.exists():
-        text = verify.read_text(encoding="utf-8")
-        # Verify rows carry the task path (leading backslash); a registration names the
-        # task only. Normalise both sides before comparing.
-        verified = {
-            name.lstrip("\\")
-            for name in re.findall(r"@\{t='((?:[^'\\]|\\.)*)'", text)
-        }
-
-    # Tasks that legitimately are not there when verify runs, or that clean
-    # themselves up. Each entry is a promise to a human, so keep the reason.
-    transient = {
-        "EBOSDefenderCleanup":
-            "created at install, self-deletes at first logon (nuke-defender-files.ps1)",
-        "EBOSDefenderRestartNotice":
-            "created at install, self-deletes at first logon (defender-restart-notice.ps1)",
-        "EBOSDefenderKeepDisabled":
-            "created by the cleanup pass after the first reboot, not before",
-    }
-
-    registered = {}
-    sources = list((ROOT / "Configuration").rglob("*.yml")) + list(
-        (ROOT / "Executables").glob("*.ps1")
+def check_tasks(report, docs):
+    spec = importlib.util.spec_from_file_location(
+        "task_coverage", Path(__file__).with_name("task_coverage.py")
     )
-    for path in sources:
-        if path.name == "ebos-verify.ps1":
-            continue
-        text = path.read_text(encoding="utf-8", errors="replace")
-
-        assignment = dict(
-            re.findall(r"^\s*\$(\w+)\s*=\s*'([^']*)'", text, re.M)
-        )
-
-        # Names are quoted as often as not, and one of them contains a space
-        # ("EBOS Personalization Guard"), so a bare [^\s]+ capture truncates it.
-        NAME = r"(?:'([^']*)'|\"([^\"]*)\"|(\S+))"
-        found = []
-        for match in re.finditer(
-            r"Register-ScheduledTask[^\n]*?-TaskName\s+" + NAME, text
-        ):
-            found.append(next(g for g in match.groups() if g is not None))
-        for match in re.finditer(
-            r"schtasks(?:\.exe)?\s+/Create[^\n]*?/TN\s+" + NAME, text, re.I
-        ):
-            found.append(next(g for g in match.groups() if g is not None))
-
-        for name in found:
-            if name.startswith("$"):
-                name = assignment.get(name[1:], name)
-            if name.startswith("$"):
-                continue  # computed at runtime, cannot be checked statically
-            registered.setdefault(name.lstrip("\\"), str(path.relative_to(ROOT)))
-
-    unchecked = []
-    for name, where in sorted(registered.items()):
-        if name in verified:
-            continue
-        if name in transient:
-            continue
-        unchecked.append((name, where))
-
-    for name, where in unchecked:
-        report.error(
-            "task '%s' is registered in %s but ebos-verify.ps1 never checks it" % (name, where)
-        )
-
-    report.note(
-        "%d task(s) registered by the playbook, %d verified, %d documented transient"
-        % (len(registered), len(set(registered) & verified), len(set(registered) & set(transient)))
-    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.check(report, ROOT, docs)
 
 
 def check_assets(report, docs):
@@ -391,15 +323,30 @@ def check_assets(report, docs):
     report.note("%d distinct files referenced from Executables/" % len(names))
 
     for name, purpose in BUNDLES:
-        if not (ROOT / "Executables" / name).exists():
+        candidates = [name, "brave-setup.exe"] if name == "BraveSetup.exe" else [name]
+        if not any((ROOT / "Executables" / candidate).is_file() for candidate in candidates):
             report.warn("bundle asset missing: %s (%s)" % (name, purpose))
-    if not (ROOT / "Executables" / "windhawk-cache").is_dir():
+    cache = ROOT / "Executables" / "windhawk-cache"
+    if not cache.is_dir():
         report.warn("bundle asset missing: Executables/windhawk-cache/ (phase 7b offline)")
-    have_wh = any((ROOT / "Executables").glob("windhawk-cli-*-installer.exe")) or (
-        ROOT / "Executables" / "windhawk_setup.exe"
-    ).exists()
-    if not have_wh:
-        report.warn("bundle asset missing: no windhawk installer (phase 7b offline)")
+    else:
+        # Match the Windows bundle checker: an empty folder is not an offline cache.
+        required = {"windows-11-taskbar-styler", "windows-11-file-explorer-styler"}
+        mod_names = required | {p.name for p in cache.iterdir() if p.is_dir()}
+        for name in sorted(mod_names):
+            folder = cache / name
+            if not folder.is_dir():
+                report.warn("bundle asset missing: windhawk-cache/%s/ (required mod)" % name)
+            elif not any(p.is_file() and p.suffix.lower() == ".dll" and p.stat().st_size
+                         for p in folder.iterdir()):
+                report.warn("bundle asset missing: precompiled DLL in windhawk-cache/%s/" % name)
+    # The GUI engine is NOT the CLI installer: phase 7b needs whcli.exe even when
+    # phase 7 already installed windhawk_setup.exe. Mirror Find-BundledInstaller.
+    have_cli = any(p.is_file() for p in (ROOT / "Executables").glob("windhawk-cli*-installer.exe"))
+    if not have_cli:
+        report.warn("bundle asset missing: windhawk-cli*-installer.exe (phase 7b offline; GUI is not a substitute)")
+    if not (ROOT / "Executables" / "windhawk_setup.exe").is_file():
+        report.warn("bundle asset missing: windhawk_setup.exe (phase 7 GUI)")
 
 
 def collect_files(report):
@@ -482,6 +429,61 @@ def verify_archive(destination):
     return names, problems, digest.hexdigest()
 
 
+def write_build_report(destination, version, names, digest, report):
+    """Regenerate the small sidecars; release/ is disposable and gitignored."""
+    source = "not available (no Git metadata)"
+    try:
+        revision = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        dirty = subprocess.check_output(
+            ["git", "status", "--porcelain"], cwd=ROOT, text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        source = revision + (" (working tree modified)" if dirty else " (clean working tree)")
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    lines = [
+        "# EBOS %s - build report" % version,
+        "",
+        "- Built at: %s" % datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "- Source: `%s`" % source,
+        "- Artifact: `%s`" % destination.name,
+        "- Size: %s bytes" % format(destination.stat().st_size, ","),
+        "- Entries: %d" % len(names),
+        "- SHA-256: `%s`" % digest,
+        '- Format: 7z / LZMA2 / AES-256 / encrypted headers / password `malte`',
+        "",
+        "## Static preflight",
+        "",
+    ]
+    lines.extend("- " + note for note in report.notes)
+    lines.extend(["", "## Build warnings", ""])
+    lines.extend("- " + warning for warning in report.warnings)
+    if not report.warnings:
+        lines.append("- None.")
+    lines.extend([
+        "", "## Validation limits", "",
+        "The builder reads archive entry names and calculates its checksum. Run an independent",
+        "`7z t -pmalte` and extract/compare the payload before distribution. Static preflight",
+        "does not execute the playbook, validate a Windows logon, or prove offline readiness.",
+        "Run the regression suite separately; PowerShell cases need pwsh/Windows PowerShell.",
+        "", "Encryption uses random data, so compare extracted files, not hashes of separate builds.",
+        "",
+    ])
+    (destination.parent / "BUILD-REPORT.md").write_text("\n".join(lines), encoding="utf-8")
+    (destination.parent / "SHA256SUMS.txt").write_text(
+        "%s  %s\n" % (digest, destination.name), encoding="utf-8"
+    )
+    notes_template = ROOT / "docs" / "releases" / (version + ".md")
+    if notes_template.is_file():
+        artifact = ("\n## Artifact for this build\n\n- File: `%s`\n- Size: %s bytes\n"
+                    "- SHA-256: `%s`\n- Source: `%s`\n" % (
+                        destination.name, format(destination.stat().st_size, ","), digest, source))
+        (destination.parent / ("RELEASE-NOTES-%s.md" % version)).write_text(
+            notes_template.read_text(encoding="utf-8") + artifact, encoding="utf-8"
+        )
+
+
 # --------------------------------------------------------------------------- #
 
 def main():
@@ -500,7 +502,7 @@ def main():
     docs = check_yaml(report, conf["options"] if conf else [])
     check_powershell(report, docs)
     check_assets(report, docs)
-    check_tasks(report)
+    check_tasks(report, docs)
     files = collect_files(report)
 
     if args.require_bundles:
@@ -544,7 +546,9 @@ def main():
     if problems:
         return 1
 
+    write_build_report(destination, version, names, digest, report)
     print("\nBuilt %s" % destination)
+    print("Wrote BUILD-REPORT.md and SHA256SUMS.txt alongside the archive.")
     return 0
 
 

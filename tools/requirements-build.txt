@@ -1,0 +1,3 @@
+# Versions used by the build/regression checks. Install on the build host only.
+PyYAML==6.0.3
+py7zr==1.1.4

@@ -269,6 +269,36 @@ actions:
   - !cmd: {command: 'cmd /c echo windhawk-styler>>"%WINDIR%\\EBOS\\ebos-options.txt"', option: "windhawk-styler"}
   - !cmd: {command: 'cmd /c echo offline-mode>>"%WINDIR%\\EBOS\\ebos-options.txt"', option: "offline-mode"}
 
+  # Capture this BEFORE phase 7 rewrites Installed=1. Timer resolution is fresh-install
+  # only: verification must not flag a user-disabled tweak on a re-apply. Binding the
+  # snapshot to this run's option-file timestamp rejects stale snapshots if this step
+  # fails. No prompt: a write failure is reported here and by the phase-8 verifier.
+  - !powerShell:
+    wait: true
+    errorAction: Ignore
+    command: |
+      try {
+        $dir = Join-Path $env:windir 'EBOS'
+        $optionFile = Get-Item -LiteralPath (Join-Path $dir 'ebos-options.txt') -ErrorAction Stop
+        $mode = 'fresh-install'
+        $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\EBOS\EBOS')
+        if ($null -eq $key) { $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\EBOS\EBOS-X') }
+        if ($null -ne $key) {
+          try { if ($key.GetValue('Installed') -eq 1) { $mode = 'reapply' } }
+          finally { $key.Close() }
+        }
+        $context = [ordered]@{
+          schema = 1
+          mode = $mode
+          optionsStamp = $optionFile.LastWriteTimeUtc.Ticks.ToString()
+        }
+        $context | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dir 'verify-context.json') -Encoding UTF8 -Force -ErrorAction Stop
+        $global:LASTEXITCODE = 0
+      } catch {
+        [Console]::Out.WriteLine('VERIFY CONTEXT WRITE FAILED: ' + $_.Exception.Message)
+        $global:LASTEXITCODE = 1
+      }
+
   - !writeStatus: {status: "Importing Power Plans"}
   - !powerShell:
     wait: true

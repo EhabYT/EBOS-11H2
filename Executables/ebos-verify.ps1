@@ -11,7 +11,23 @@ $out = @(); $checked = 0; $bad = 0; $na = 0
 $dir = Join-Path $env:windir 'EBOS'
 $opts = @()
 $optFile = Join-Path $dir 'ebos-options.txt'
-if (Test-Path $optFile) { foreach ($l in (Get-Content $optFile)) { $t=$l.Trim(); if ($t) { $opts += $t } } }
+# Phase 7 has already written Installed=1, even on a fresh install. Use the phase-1
+# snapshot, bound to this run's option-file timestamp, rather than that final stamp.
+# Missing options/context must not turn every gated check into a silent no-op.
+$installMode = 'unknown'
+$checked++
+try {
+  $optionFile = Get-Item -LiteralPath $optFile -ErrorAction Stop
+  foreach ($l in (Get-Content -LiteralPath $optFile -ErrorAction Stop)) { $t=$l.Trim(); if ($t) { $opts += $t } }
+  $context = Get-Content -LiteralPath (Join-Path $dir 'verify-context.json') -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+  if ($context.schema -ne 1 -or $context.mode -notin @('fresh-install','reapply') -or
+      [string]$context.optionsStamp -ne $optionFile.LastWriteTimeUtc.Ticks.ToString()) {
+    throw 'Verification context is stale or invalid.'
+  }
+  $installMode = $context.mode
+} catch {
+  $bad++; $out += ('VERIFY CONTEXT FAILED  ' + $_.Exception.Message)
+}
 function Test-Gate { param([string]$g)
   if (-not $g) { return $true }
   if ($g.StartsWith('!')) { return -not ($opts -contains $g.Substring(1)) }
@@ -297,7 +313,7 @@ $regs = @(
   @{p='HKLM\SOFTWARE\Policies\Microsoft\Windows\AppCompat';v='AllowTelemetry';d='0';op='add';g=''},
   @{p='HKLM\SOFTWARE\Microsoft\FTH';v='Enabled';d='0';op='add';g=''},
   @{p='HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management';v='DisablePagingExecutive';d='1';op='add';g=''},
-  @{p='HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\kernel';v='GlobalTimerResolutionRequests';d='1';op='add';g=''},
+  @{p='HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\kernel';v='GlobalTimerResolutionRequests';d='1';op='add';g='';scope='fresh-install'},
   @{p='HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\kernel';v='SerializeTimerExpiration';d='1';op='add';g=''},
   @{p='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WINEVT\Channels\Microsoft-Windows-Superfetch/StoreLog';v='Enable';d='0';op='add';g=''},
   @{p='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WINEVT\Channels\Microsoft-Windows-Superfetch/Main';v='Enable';d='0';op='add';g=''},
@@ -874,6 +890,7 @@ foreach ($k in $keys) { if ($k.op -eq 'delete') { $deletedKeys += $k.p.ToLower()
 
 foreach ($e in $regs) {
   if (-not (Test-Gate $e.g)) { $na++; continue }
+  if ($e.scope -eq 'fresh-install' -and $installMode -eq 'reapply') { $na++; continue }
   $pl = $e.p.ToLower(); $under = $false
   foreach ($dk in $deletedKeys) { if ($pl -eq $dk -or $pl.StartsWith($dk + '\\')) { $under = $true; break } }
   if ($under) { $na++; continue }
@@ -1021,7 +1038,16 @@ foreach ($e in $svcs) {
   elseif ([string]$cur -ne [string]$e.s) { $bad++; $out += ('SERVICE WRONG START    ' + $e.n + ' = ' + $cur + ' (wanted ' + $e.s + ')') } }
 
 $allTasks = @{}
-foreach ($t in (Get-ScheduledTask)) { $allTasks[($t.TaskPath + $t.TaskName)] = $t.State }
+$taskQueryOk = $false
+try {
+  # -ErrorAction Stop is important: a partial/failed enumeration is NOT evidence
+  # that deleted tasks are absent. Do not run any assertions on a partial snapshot.
+  $snapshot = @(Get-ScheduledTask -ErrorAction Stop)
+  foreach ($t in $snapshot) { $allTasks[($t.TaskPath + $t.TaskName)] = [string]$t.State }
+  $taskQueryOk = $true
+} catch {
+  $checked++; $bad++; $out += ('TASK QUERY FAILED      ' + $_.Exception.Message)
+}
 $tasks = @(
   @{t='\Microsoft\Windows\UpdateOrchestrator\Driver Install';g='disable-auto-driver-updates'},
   @{t='\Microsoft\Windows\Windows Defender\Windows Defender Cache Maintenance';g='disable-defender';op='delete'},
@@ -1192,15 +1218,17 @@ $tasks = @(
   # crossdevice-neuter.ps1 (phase 7). Both log 'logon guard installed' but neither
   # fails when schtasks /Create silently does nothing.
   @{t='\EBOS-ResumeGuard';g='';op='create'},
-  # Created from XML by setup-timerresolution.ps1, which phase 5 runs ungated. The
-  # output of that schtasks call is discarded, so a failure would be invisible.
-  @{t='\EBOS-TimerResolution';g='';op='create'},
+  # The phase-5 action is ungated, but setup-timerresolution.ps1 intentionally does
+  # nothing on re-apply. Only require its task on a fresh install; preserve Dash choices.
+  @{t='\EBOS-TimerResolution';g='';op='create';scope='fresh-install'},
   # Left behind by older EBOS builds; both scripts delete it. Absent is the pass,
   # so this is safe on a clean install where it never existed.
   @{t='\Microsoft\Windows\Shell\EBOS-X Resume Guard';g='';op='delete'}
 )
 foreach ($e in $tasks) {
   if (-not (Test-Gate $e.g)) { $na++; continue }
+  if ($e.scope -eq 'fresh-install' -and $installMode -eq 'reapply') { $na++; continue }
+  if (-not $taskQueryOk) { continue } # the inventory failure above is already reported
   # A deleted task never reports 'Disabled' - it is simply absent, which the old code
   # counted as not-applicable and therefore could never fail.
   if ($e.op -eq 'delete') {
@@ -1216,6 +1244,7 @@ foreach ($e in $tasks) {
     $checked++
     if (-not $allTasks.ContainsKey($e.t)) { $bad++; $out += ('TASK NOT CREATED       ' + $e.t) }
     elseif ($allTasks[$e.t] -eq 'Disabled') { $bad++; $out += ('TASK CREATED DISABLED  ' + $e.t) }
+    elseif ($allTasks[$e.t] -notin @('Ready','Running','Queued')) { $bad++; $out += ('TASK STATE UNKNOWN     ' + $e.t + ' = ' + $allTasks[$e.t]) }
     continue
   }
   if (-not $allTasks.ContainsKey($e.t)) { $na++; continue }
@@ -1528,6 +1557,7 @@ if (Test-Gate 'windhawk-styler') {
 if (-not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
 $hdr = @()
 $hdr += ('EBOS verification - ' + (Get-Date -Format s))
+$hdr += ('install context: ' + $installMode)
 $hdr += ('options ticked: ' + $(if ($opts.Count) { $opts -join ', ' } else { '(none recorded)' }))
 $hdr += ('checked ' + $checked + ', not applicable ' + $na + ', DID NOT TAKE ' + $bad)
 $hdr += ('-' * 74)

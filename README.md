@@ -58,7 +58,9 @@ EBOS-11H2-release-r11/
 └── tools/
     ├── build-hkcu-fanout.py # regenerates apply-hkcu-fanout.ps1 from the YAML
     ├── check-ps-syntax.py   # brace/quote balance for every PS block in the playbook
-    └── build-playbook.py    # validates the playbook and packs it into an .apbx
+    ├── task_coverage.py     # direct task registrations vs runtime assertions
+    ├── tests/               # coverage, bundle, CI and mocked verifier regressions
+    └── build-playbook.py    # static preflight, .apbx and regenerable build reports
 ```
 
 ## Install flowchart
@@ -303,13 +305,15 @@ AME Wizard convention password `malte`. The password is not a secret - it stops 
 and antivirus from scanning the bundled executables.
 
 ```bash
+python3 -m pip install -r tools/requirements-build.txt
+python3 -m unittest discover -s tools/tests -v    # explicit skip if PowerShell is unavailable
 python3 tools/build-playbook.py                  # validate, then write release/EBOS-v<version>.apbx
 python3 tools/build-playbook.py --dry-run        # validate only
 python3 tools/build-playbook.py --require-bundles  # offline release: missing binaries become errors
 ```
 
-The build refuses to ship an archive that would load but fail halfway through on a real
-machine. Before packing it checks that:
+The builder performs static preflight checks before packing. These catch known configuration
+mistakes; they cannot prove that the playbook will succeed on a real Windows machine:
 
 | Check | Why |
 |---|---|
@@ -318,20 +322,28 @@ machine. Before packing it checks that:
 | every YAML file parses; every `!task` target exists | a broken task file aborts the phase |
 | no task file is unreferenced from `main.yml` | dead file that looks maintained |
 | every `option:` is declared, every declared option is used | a typo'd name silently never runs |
-| all PowerShell snippets balance | YAML cannot see inside a `command:` string |
-| every file an action reaches for exists | a missing script is a silent no-op |
+| all PowerShell snippets balance | heuristic delimiter/quote check, not a full PowerShell parser |
+| recognised literal file references resolve | dynamic references still need review |
+| direct task registrations have matching `create` checks | a delete/disable row with the same name is not coverage |
 | image-backed options have their `Images/<name>.png` | otherwise the wizard shows a blank tile |
 | nothing is zero bytes | truncated copy |
 
-Bundled binaries are not committed, so their absence is a **warning** by default - an
-online install still works. `--require-bundles` promotes them to errors, which is what
-you want before publishing an offline release. See `Executables/BUNDLES.md`.
+The optional VC++/Brave installers and Windhawk CLI/cache are external build inputs, so
+their absence is a **warning** by default. `--require-bundles` promotes these warnings to
+errors and requires compiled DLLs in both required mod folders. The bundled Windhawk GUI
+is **not** a substitute for the CLI installer. These structural checks do not validate
+Authenticode or runtime behaviour; run the Windows bundle checker and a network-isolated
+VM test too. See `Executables/BUNDLES.md`.
 
-`release/` and `*.apbx` are gitignored; rebuild in about 30 seconds.
+`release/` and `*.apbx` are gitignored. Each build regenerates `BUILD-REPORT.md` and
+`SHA256SUMS.txt`; if `docs/releases/<version>.md` exists, it also regenerates the release
+notes with the measured artifact hash and source revision. Keep edits in that tracked
+template, not only in disposable `release/` files.
 
-The archive is written by `py7zr` but read by AME Wizard's own 7-Zip, so the two have to
-agree. Verified with p7zip 16.02: `7z t` reports *Everything is Ok* on all 228 entries,
-`7z l` lists names only with the password, and extraction returns byte-identical files.
+The archive is written by `py7zr`; validate each distribution with an independent 7-Zip
+implementation: `7z t -pmalte`, ensure `7z l` cannot list it without the password, and
+extract/compare the payload. The builder itself checks entry layout and calculates a
+checksum; it does not perform an AME/Windows integration test.
 
 ### Releasing
 
@@ -343,10 +355,13 @@ token may write, so `tools/ci/release.yml` is parked there ready to copy:
 mkdir -p .github/workflows && cp tools/ci/release.yml .github/workflows/release.yml
 ```
 
-Once committed, every tag push builds the archive on a runner, checks it with real 7-Zip
-and attaches it to the release - no local upload needed. The workflow refuses a tag that
-does not equal `<Version>` in `playbook.conf`, because AME Wizard compares the two when
-deciding whether an update is available.
+Once installed, a tag push or manual dispatch builds **that exact tag**, checks the
+archive with 7-Zip and creates/updates only a **draft** release. It refuses to modify a
+published release and never uses `--clobber` or publishes automatically. The tag must
+equal `<Version>` in `playbook.conf`, because AME Wizard compares the two for updates.
+The tag must also contain the current tooling: the existing `11.2` tag was created
+before the later audit fixes, so dispatching it does not build the latest branch.
+No existing tag is moved by this recipe.
 
 Until then, after building locally:
 
@@ -356,7 +371,39 @@ gh release upload 11.2 release/EBOS-v11.2.apbx
 
 ## Verification
 
-After apply, `ebos-verify.ps1` re-reads every declared registry value, key, service, task, AppX entry and file (theme content, 17 cursors, ICO headers). Anything that did not take is logged to `%WINDIR%\EBOS\ebos-skipped.txt`. Gated options that were unticked count as not-applicable, not failures.
+After apply, `ebos-verify.ps1` checks the expected states represented by its registry,
+key, service, task, AppX and file tables (including theme content, cursors and ICO headers).
+Mismatches are appended to `%WINDIR%\EBOS\ebos-skipped.txt`. Unticked option gates count as
+not-applicable, not failures. A successful table comparison is not proof of successful
+logon execution or full visual activation.
+
+For scheduled tasks, `create` requires presence and a Ready/Running/Queued state, `delete`
+requires absence, and the default operation expects Disabled (absent built-in tasks are
+not applicable). A failed or partial Task Scheduler query is explicitly reported rather
+than letting absence checks pass on an unreadable inventory.
+
+Phase 1 snapshots fresh-install versus re-apply in `verify-context.json`, bound to the
+current option-file timestamp. This is needed because phase 7 overwrites Installed=1.
+The timer task and `GlobalTimerResolutionRequests` are fresh-install-only expectations;
+re-applying must not flag a tweak intentionally disabled in Dash. Missing/stale context
+is a failure, not an excuse to skip all gated checks.
+
+`tools/task_coverage.py` checks direct registrations in parsed YAML command bodies and
+recursive `.ps1` files: exact task path, `create` operation, known YAML caller gate and
+explicit install scope. It is deliberately not a PowerShell interpreter: generated code,
+aliases and runtime control flow still need review. Computed names in recognised
+registrations fail the build instead of being silently ignored.
+
+Three Defender-task lifecycle exclusions remain documented in that module and in
+[the 11.2 notes](docs/releases/11.2.md). Cleanup and RestartNotice are normally created
+during apply and can remove themselves at subsequent logons; KeepDisabled is created by
+the deferred cleanup. None is counted as verified success. Their lifecycle still needs
+post-logon integration testing.
+
+Run `tools/tests/test_verify_tasks.ps1` with PowerShell to exercise the actual verifier
+blocks against mocked task/registry reads. It changes no Windows settings. The Python
+test runner reports an explicit skip when PowerShell is unavailable; the CI recipe also
+runs it as a required PowerShell step. A Windows AME VM test is still required.
 
 ## Notes
 
