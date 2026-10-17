@@ -100,6 +100,14 @@ $regs = @(
   @{p='HKLM\SOFTWARE\Microsoft\Windows\Dwm';v='EnableOverlay';d='';op='delete';g=''},
   @{p='HKLM\SOFTWARE\Microsoft\Windows\Dwm';v='OverlayTestMode';d='';op='delete';g=''},
   @{p='HKLM\SOFTWARE\Microsoft\Windows\Dwm';v='OverlayMinFPS';d='';op='delete';g=''},
+  # Legacy cleanup done by !powerShell blocks: success means the value is gone.
+  @{p='HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters';v='TcpTimedWaitDelay';d='';op='delete';g=''},
+  @{p='HKLM\SOFTWARE\Policies\Microsoft\Windows\Explorer';v='SimplifyQuickSettings';d='';op='delete';g=''},
+  @{p='HKLM\SOFTWARE\Microsoft\PolicyManager\current\device\Stickers';v='EnableStickers';d='';op='delete';g=''},
+  @{p='HKLM\SYSTEM\CurrentControlSet\Services\WSearch';v='DelayedAutostart';d='';op='delete';g=''},
+  # Deliberately absent: phase 5 also deletes Explorer\StuckRects3\Settings, which is
+  # live taskbar state that Explorer recreates within seconds of logon. Asserting it is
+  # gone would fail on every machine, so it is excluded from coverage on purpose.
   @{p='HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings';v='FlightSettingsMaxPauseDays';d='3650';op='add';g=''},
   @{p='HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings';v='PauseFeatureUpdatesStartTime';d='2025-01-01T00:00:00Z';op='add';g=''},
   @{p='HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings';v='PauseFeatureUpdatesEndTime';d='2033-01-01T00:00:00Z';op='add';g=''},
@@ -344,6 +352,11 @@ $regs = @(
   @{p='HKCU\Control Panel\Mouse';v='MouseTrails';d='0';op='add';g=''},
   @{p='HKCU\Control Panel\Mouse';v='MouseAccel';d='0';op='add';g=''},
   @{p='HKCU\Control Panel\Desktop';v='JPEGImportQuality';d='100';op='add';g=''},
+  # fs-wallpaper: the PNGs are already checked as files. These are the pointers that
+  # make them appear - a correct file that nothing references is a black screen.
+  @{p='HKU\.DEFAULT\Control Panel\Desktop';v='Wallpaper';d='%SystemRoot%\Web\Wallpaper\EBOS\wallpaper.png';op='add';g='fs-wallpaper'},
+  @{p='HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization';v='LockScreenImagePath';d='%SystemRoot%\Web\Wallpaper\EBOS\lockscreen.png';op='add';g='fs-wallpaper'},
+  @{p='HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization';v='LockScreenImageUrl';d='%SystemRoot%\Web\Wallpaper\EBOS\lockscreen.png';op='add';g='fs-wallpaper'},
   @{p='HKCU\Control Panel\Mouse';v='SnapToDefaultButton';d='0';op='add';g=''},
   @{p='HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects';v='VisualFXSetting';d='3';op='add';g='fs-noanimations'},
   @{p='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects\FontSmoothing';v='DefaultValue';d='1';op='add';g=''},
@@ -457,6 +470,8 @@ $regs = @(
   @{p='HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion';v='EditionSubVersion';d='EBOS';op='add';g=''},
   @{p='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation';v='Manufacturer';d='EBOS';op='add';g=''},
   @{p='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation';v='SupportURL';d='https://discord.gg/9cHp2Jwq4b';op='add';g=''},
+  @{p='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OEMInformation';v='Model';d='EBOS';op='add';g=''},
+  @{p='HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion';v='RegisteredOrganization';d='EBOS';op='add';g=''},
   @{p='HKCU\Environment';v='DOTNET_CLI_TELEMETRY_OPTOUT';d='1';op='add';g=''},
   @{p='HKU\.DEFAULT\Environment';v='DOTNET_CLI_TELEMETRY_OPTOUT';d='1';op='add';g=''},
   @{p='HKU\.DEFAULT\Control Panel\Cursors';v='Arrow';d='%SystemRoot%\Cursors\EBOS\ebos-arrow.ani';op='add';g=''},
@@ -988,7 +1003,13 @@ $svcs = @(
   @{n='PrintScanBrokerService';s='4';g='disable-printing'},
   @{n='usbprint';s='4';g='disable-printing'},
   @{n='fhsvc';s='4';g='disable-printing'},
-  @{n='stisvc';s='4';g='disable-printing'}
+  @{n='stisvc';s='4';g='disable-printing'},
+  # Written by phase 2 / phase 5 PowerShell, not by a !service action, so nothing
+  # used to read them back. Same rule: absent service is N/A, wrong Start is a fail.
+  @{n='PhoneSvc';s='4';g=''},
+  @{n='CDPSvc';s='4';g=''},
+  @{n='AppIDSvc';s='4';g='remove-ai'},
+  @{n='WSearch';s='2';g=''}
 )
 foreach ($e in $svcs) {
   if (-not (Test-Gate $e.g)) { $na++; continue }
