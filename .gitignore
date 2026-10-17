@@ -12,3 +12,6 @@ offline-bundle/
 # Python bytecode (tools/)
 __pycache__/
 *.pyc
+
+# Build output (tools/build-playbook.py)
+release/

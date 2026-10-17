@@ -57,7 +57,8 @@ EBOS-11H2-release-r11/
 │   └── brave.png            # browser option icon
 └── tools/
     ├── build-hkcu-fanout.py # regenerates apply-hkcu-fanout.ps1 from the YAML
-    └── check-ps-syntax.py   # brace/quote balance for every PS block in the playbook
+    ├── check-ps-syntax.py   # brace/quote balance for every PS block in the playbook
+    └── build-playbook.py    # validates the playbook and packs it into an .apbx
 ```
 
 ## Install flowchart
@@ -285,6 +286,7 @@ The data is **generated**, not hand-maintained:
 ```bash
 python3 tools/build-hkcu-fanout.py     # after touching any HKCU registryValue
 python3 tools/check-ps-syntax.py       # before shipping: 245 PS blocks, must be 0 issues
+python3 tools/build-playbook.py        # validate everything, then pack the .apbx
 ```
 
 Verification moved from phase 7 to phase 8 so it inspects the final state - otherwise it
@@ -292,6 +294,40 @@ reports values that phases 7b and 8 repair after it runs.
 
 Results land in `%WINDIR%\EBOS\hkcu-fanout.txt` (`applied=`, `skipped_gate=`, `failed=`,
 plus the hive list).
+
+## Building the .apbx
+
+An `.apbx` is a 7-Zip archive with the playbook files at the **root** (`playbook.conf`
+first, not nested inside a folder), AES-256 encrypted with encrypted headers and the
+AME Wizard convention password `malte`. The password is not a secret - it stops browsers
+and antivirus from scanning the bundled executables.
+
+```bash
+python3 tools/build-playbook.py                  # validate, then write release/EBOS-v<version>.apbx
+python3 tools/build-playbook.py --dry-run        # validate only
+python3 tools/build-playbook.py --require-bundles  # offline release: missing binaries become errors
+```
+
+The build refuses to ship an archive that would load but fail halfway through on a real
+machine. Before packing it checks that:
+
+| Check | Why |
+|---|---|
+| `playbook.conf` parses and has every required element | the wizard reads it first |
+| `SupportedBuilds` equals the `$supported` gate in phase 1 | otherwise the wizard says "supported" and phase 1 says "no" |
+| every YAML file parses; every `!task` target exists | a broken task file aborts the phase |
+| no task file is unreferenced from `main.yml` | dead file that looks maintained |
+| every `option:` is declared, every declared option is used | a typo'd name silently never runs |
+| all PowerShell snippets balance | YAML cannot see inside a `command:` string |
+| every file an action reaches for exists | a missing script is a silent no-op |
+| image-backed options have their `Images/<name>.png` | otherwise the wizard shows a blank tile |
+| nothing is zero bytes | truncated copy |
+
+Bundled binaries are not committed, so their absence is a **warning** by default - an
+online install still works. `--require-bundles` promotes them to errors, which is what
+you want before publishing an offline release. See `Executables/BUNDLES.md`.
+
+`release/` and `*.apbx` are gitignored; rebuild in about 30 seconds.
 
 ## Verification
 
