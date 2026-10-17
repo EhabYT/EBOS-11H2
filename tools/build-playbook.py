@@ -397,7 +397,12 @@ def build(files, destination):
     if destination.exists():
         destination.unlink()
 
-    filters = [{"id": py7zr.FILTER_LZMA2, "preset": 1}]
+    # Passing a custom filter chain suppresses py7zr's automatic AES filter even
+    # when a password is supplied. Encrypt BOTH file contents and the header.
+    filters = [
+        {"id": py7zr.FILTER_LZMA2, "preset": 1},
+        {"id": py7zr.FILTER_CRYPTO_AES256_SHA256},
+    ]
     with py7zr.SevenZipFile(
         destination, "w", password=PASSWORD, header_encryption=True, filters=filters
     ) as archive:
@@ -409,11 +414,29 @@ def build(files, destination):
 
 def verify_archive(destination):
     import py7zr
-
-    with py7zr.SevenZipFile(destination, "r", password=PASSWORD) as archive:
-        names = archive.getnames()
+    from py7zr.properties import COMPRESSION_METHOD
 
     problems = []
+    with py7zr.SevenZipFile(destination, "r", password=PASSWORD) as archive:
+        names = archive.getnames()
+        # Check every payload folder, not just needs_password(): that also returns
+        # true for an encrypted header wrapped around unencrypted file contents.
+        # This metadata API is covered by tests and the pinned py7zr dependency.
+        streams = archive.header.main_streams
+        folders = streams.unpackinfo.folders if streams and streams.unpackinfo else []
+        if not folders or any(
+            not any(c["method"] == COMPRESSION_METHOD.CRYPT_AES256_SHA256 for c in folder.coders)
+            for folder in folders
+        ):
+            problems.append("archive payload is not fully AES-256 encrypted")
+
+    try:
+        with py7zr.SevenZipFile(destination, "r") as public:
+            public.getnames()
+    except py7zr.PasswordRequired:
+        pass
+    else:
+        problems.append("archive headers are not encrypted")
     if "playbook.conf" not in names:
         problems.append("playbook.conf is not at the archive root")
     if any(name.startswith("./") or name.startswith("/") for name in names):
@@ -463,7 +486,7 @@ def write_build_report(destination, version, names, digest, report):
         lines.append("- None.")
     lines.extend([
         "", "## Validation limits", "",
-        "The builder reads archive entry names and calculates its checksum. Run an independent",
+        "The builder checks entry layout/encryption metadata and calculates a checksum. Run an independent",
         "`7z t -pmalte` and extract/compare the payload before distribution. Static preflight",
         "does not execute the playbook, validate a Windows logon, or prove offline readiness.",
         "Run the regression suite separately; PowerShell cases need pwsh/Windows PowerShell.",

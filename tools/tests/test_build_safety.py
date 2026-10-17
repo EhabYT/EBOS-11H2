@@ -67,6 +67,55 @@ class BundleChecks(unittest.TestCase):
             self.assertEqual("false", options[0].get("IsChecked"))
 
 
+class ArchiveEncryptionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root / "Configuration").mkdir()
+        self.files = [self.root / "playbook.conf", self.root / "Configuration" / "main.yml"]
+        for path in self.files:
+            path.write_text("non-empty payload for encryption regression tests\n")
+        self.archive = self.root / "fixture.apbx"
+
+    def test_custom_compression_chain_encrypts_payload_and_header(self):
+        import py7zr
+        with patch.object(builder, "ROOT", self.root):
+            builder.build(self.files, self.archive)
+        names, problems, digest = builder.verify_archive(self.archive)
+        self.assertEqual([], problems)
+        self.assertEqual(["playbook.conf", "Configuration/main.yml"], names)
+        self.assertEqual(64, len(digest))
+        with py7zr.SevenZipFile(self.archive, password=builder.PASSWORD) as archive:
+            self.assertIn("7zAES", archive.archiveinfo().method_names)
+            extracted = self.root / "extracted"
+            archive.extractall(extracted)
+        for path in self.files:
+            self.assertEqual(path.read_bytes(), (extracted / path.relative_to(self.root)).read_bytes())
+        with self.assertRaises(py7zr.PasswordRequired):
+            py7zr.SevenZipFile(self.archive).close()
+
+    def test_header_only_encryption_is_rejected(self):
+        import py7zr
+        with py7zr.SevenZipFile(self.archive, "w", password=builder.PASSWORD,
+                               header_encryption=True, filters=[{"id": py7zr.FILTER_LZMA2}]) as archive:
+            for path in self.files:
+                archive.write(path, arcname=path.relative_to(self.root).as_posix())
+        _, problems, _ = builder.verify_archive(self.archive)
+        self.assertIn("archive payload is not fully AES-256 encrypted", problems)
+        self.assertNotIn("archive headers are not encrypted", problems)
+
+    def test_payload_only_encryption_is_rejected(self):
+        import py7zr
+        with py7zr.SevenZipFile(self.archive, "w", password=builder.PASSWORD,
+                               header_encryption=False) as archive:
+            for path in self.files:
+                archive.write(path, arcname=path.relative_to(self.root).as_posix())
+        _, problems, _ = builder.verify_archive(self.archive)
+        self.assertIn("archive headers are not encrypted", problems)
+        self.assertNotIn("archive payload is not fully AES-256 encrypted", problems)
+
+
 class BuildReportTests(unittest.TestCase):
     def test_sidecars_are_regenerated_with_measured_metadata(self):
         with tempfile.TemporaryDirectory() as directory:

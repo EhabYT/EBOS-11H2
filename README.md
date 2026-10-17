@@ -342,8 +342,11 @@ template, not only in disposable `release/` files.
 
 The archive is written by `py7zr`; validate each distribution with an independent 7-Zip
 implementation: `7z t -pmalte`, ensure `7z l` cannot list it without the password, and
-extract/compare the payload. The builder itself checks entry layout and calculates a
-checksum; it does not perform an AME/Windows integration test.
+extract/compare the payload. Also inspect `7z l -slt -pmalte`: all payload files must show
+`Encrypted = +`. Rejecting password-less listing only proves header encryption, not
+payload encryption. The builder explicitly adds the AES-256 filter after LZMA2 and
+checks both layers. Regression tests reject header-only and payload-only archives.
+These checks do not constitute an AME/Windows integration test.
 
 ### Releasing
 

@@ -87,6 +87,12 @@ jobs:
           archives=(release/*.apbx)
           [ "${#archives[@]}" -eq 1 ] || { echo "Expected exactly one .apbx"; exit 1; }
           7z t -p"malte" "${archives[0]}"
+          listing="$RUNNER_TEMP/ebos-archive-list.txt"
+          7z l -slt -p"malte" "${archives[0]}" > "$listing"
+          if grep -q '^Encrypted = -$' "$listing" || ! grep -q '^Encrypted = +$' "$listing"; then
+            echo "::error::Archive file contents are not fully encrypted."
+            exit 1
+          fi
           if 7z l "${archives[0]}" </dev/null >/dev/null 2>&1; then
             echo "::error::Archive listed without a password; header encryption is missing."
             exit 1
